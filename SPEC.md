@@ -11,7 +11,7 @@
 
 ## Phase 2 — Auth
 - [x] JWT access + refresh token flow (jsonwebtoken)
-- [ ] OAuth 2.0 PKCE flow with Google (passport + passport-google-oauth20)
+- [x] OAuth 2.0 PKCE flow with Google (passport + passport-google-oauth20)
 - [ ] Argon2 password hashing
 - [ ] Rate limiter middleware (`express-rate-limit`) on auth routes
 - [ ] Auth middleware factory: `requireAuth`, `requireRole`
