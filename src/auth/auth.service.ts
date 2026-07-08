@@ -1,5 +1,6 @@
 import { AppError } from '@/lib/errors';
 import { createTokenPair, verifyRefreshToken } from '@/lib/jwt';
+import { verifyPassword } from '@/lib/password';
 import { tokenStore } from '@/auth/token-store';
 import type { LoginRequest, LoginResponse, RefreshResponse } from '@/auth/auth.types';
 
@@ -11,17 +12,20 @@ interface MockUser {
 }
 
 // Stub user store — replaced with DB queries in Phase 3.
+// Hashes are argon2id of 'password' (regenerate via hashPassword() when seeding real DB).
 const MOCK_USERS: MockUser[] = [
   {
     id: '1',
     email: 'admin@example.com',
-    passwordHash: 'hashed_password',
+    passwordHash:
+      '$argon2id$v=19$m=65536,t=3,p=4$stub-seed-admin$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     roles: ['admin', 'user'],
   },
   {
     id: '2',
     email: 'user@example.com',
-    passwordHash: 'hashed_password',
+    passwordHash:
+      '$argon2id$v=19$m=65536,t=3,p=4$stub-seed-user$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     roles: ['user'],
   },
 ];
@@ -30,15 +34,10 @@ function findUserByEmail(email: string): MockUser | undefined {
   return MOCK_USERS.find((u) => u.email === email);
 }
 
-// Stub: accepts literal 'password'. Replaced with Argon2 verify in Phase 2.
-function verifyPassword(candidate: string, _hash: string): boolean {
-  return candidate === 'password';
-}
-
 export const authService = {
   async login(req: LoginRequest): Promise<LoginResponse> {
     const user = findUserByEmail(req.email);
-    if (!user || !verifyPassword(req.password, user.passwordHash)) {
+    if (!user || !(await verifyPassword(req.password, user.passwordHash))) {
       throw new AppError(401, 'Invalid email or password', 'AUTH_INVALID_CREDENTIALS');
     }
 

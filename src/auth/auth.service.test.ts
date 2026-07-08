@@ -3,6 +3,11 @@ import { tokenStore } from '@/auth/token-store';
 
 // env vars injected via jest.setup.ts before any module is loaded
 
+jest.mock('@/lib/password', () => ({
+  verifyPassword: jest.fn(async (plain: string, _hash: string) => plain === 'password'),
+  hashPassword: jest.fn(async (plain: string) => `argon2id-mock:${plain}`),
+}));
+
 describe('authService.login', () => {
   it('returns tokens and user on valid credentials', async () => {
     const result = await authService.login({
