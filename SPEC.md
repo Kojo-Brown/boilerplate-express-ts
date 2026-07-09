@@ -14,7 +14,7 @@
 - [x] OAuth 2.0 PKCE flow with Google (passport + passport-google-oauth20)
 - [x] Argon2 password hashing
 - [x] Rate limiter middleware (`express-rate-limit`) on auth routes
-- [ ] Auth middleware factory: `requireAuth`, `requireRole`
+- [x] Auth middleware factory: `requireAuth`, `requireRole`
 
 ## Phase 3 — Database
 - [ ] PostgreSQL connection pool via `pg` with typed query helper
