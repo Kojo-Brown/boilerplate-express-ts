@@ -13,7 +13,7 @@
 - [x] JWT access + refresh token flow (jsonwebtoken)
 - [x] OAuth 2.0 PKCE flow with Google (passport + passport-google-oauth20)
 - [x] Argon2 password hashing
-- [ ] Rate limiter middleware (`express-rate-limit`) on auth routes
+- [x] Rate limiter middleware (`express-rate-limit`) on auth routes
 - [ ] Auth middleware factory: `requireAuth`, `requireRole`
 
 ## Phase 3 — Database
