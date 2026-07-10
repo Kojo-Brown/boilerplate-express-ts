@@ -7,7 +7,7 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
-  DATABASE_URL: z.string().optional(),
+  DATABASE_URL: z.string().min(1),
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
   SESSION_SECRET: z.string().min(32).default('default-session-secret-for-pkce-state-only!!'),
   GOOGLE_CLIENT_ID: z.string().default(''),
