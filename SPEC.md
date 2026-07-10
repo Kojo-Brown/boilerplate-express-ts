@@ -18,7 +18,7 @@
 
 ## Phase 3 — Database
 - [x] PostgreSQL connection pool via `pg` with typed query helper
-- [ ] SQL migration runner (node-pg-migrate)
+- [x] SQL migration runner (node-pg-migrate)
 - [ ] Repository pattern: typed CRUD base class
 - [ ] Transaction helper with automatic rollback
 
