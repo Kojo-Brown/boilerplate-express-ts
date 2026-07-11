@@ -4,3 +4,5 @@ export { runMigrations, MIGRATIONS_TABLE, DEFAULT_MIGRATIONS_DIR } from '@/db/mi
 export type { MigrateOptions } from '@/db/migrate';
 export { BaseRepository } from '@/db/repository';
 export type { FindAllOptions, OrderDirection, WhereCondition } from '@/db/repository';
+export { withTransaction } from '@/db/transaction';
+export type { TransactionClient } from '@/db/transaction';
