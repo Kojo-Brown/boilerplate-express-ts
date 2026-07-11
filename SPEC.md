@@ -20,7 +20,7 @@
 - [x] PostgreSQL connection pool via `pg` with typed query helper
 - [x] SQL migration runner (node-pg-migrate)
 - [x] Repository pattern: typed CRUD base class
-- [ ] Transaction helper with automatic rollback
+- [x] Transaction helper with automatic rollback
 
 ## Phase 4 — API Patterns
 - [ ] Zod request validation middleware (body, query, params)
