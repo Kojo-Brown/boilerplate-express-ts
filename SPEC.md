@@ -23,7 +23,7 @@
 - [x] Transaction helper with automatic rollback
 
 ## Phase 4 — API Patterns
-- [ ] Zod request validation middleware (body, query, params)
+- [x] Zod request validation middleware (body, query, params)
 - [ ] Cursor-based pagination helper
 - [ ] File upload (Multer + S3 presigned URLs)
 - [ ] Response envelope: `{ data, meta, error }`
