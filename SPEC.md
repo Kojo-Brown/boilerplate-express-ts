@@ -25,7 +25,7 @@
 ## Phase 4 — API Patterns
 - [x] Zod request validation middleware (body, query, params)
 - [x] Cursor-based pagination helper
-- [ ] File upload (Multer + S3 presigned URLs)
+- [x] File upload (Multer + S3 presigned URLs)
 - [ ] Response envelope: `{ data, meta, error }`
 
 ## Phase 5 — Testing & DevOps
