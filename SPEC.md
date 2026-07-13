@@ -26,7 +26,7 @@
 - [x] Zod request validation middleware (body, query, params)
 - [x] Cursor-based pagination helper
 - [x] File upload (Multer + S3 presigned URLs)
-- [ ] Response envelope: `{ data, meta, error }`
+- [x] Response envelope: `{ data, meta, error }`
 
 ## Phase 5 — Testing & DevOps
 - [ ] Jest + Supertest E2E tests for auth + CRUD
