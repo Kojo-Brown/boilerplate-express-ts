@@ -29,6 +29,6 @@
 - [x] Response envelope: `{ data, meta, error }`
 
 ## Phase 5 — Testing & DevOps
-- [ ] Jest + Supertest E2E tests for auth + CRUD
+- [x] Jest + Supertest E2E tests for auth + CRUD
 - [ ] GitHub Actions: lint → typecheck → test → build → Docker push
 - [ ] Multi-stage Dockerfile + docker-compose with postgres
