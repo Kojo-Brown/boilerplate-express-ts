@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { generatePresignedPutUrl, uploadToS3 } from '@/upload/s3.service';
 import { AppError } from '@/lib/errors';
+import { sendOk, sendCreated } from '@/lib/response';
 import type { PresignBody, PresignData, UploadData } from '@/upload/upload.types';
 
 export const uploadController = {
@@ -19,7 +20,7 @@ export const uploadController = {
         expiresIn: result.expiresIn,
       };
 
-      res.status(200).json({ data, meta: null, error: null });
+      sendOk(res, data);
     } catch (err) {
       next(err);
     }
@@ -42,7 +43,7 @@ export const uploadController = {
         contentType: mimetype,
       };
 
-      res.status(201).json({ data, meta: null, error: null });
+      sendCreated(res, data);
     } catch (err) {
       next(err);
     }
