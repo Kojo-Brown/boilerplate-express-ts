@@ -6,6 +6,7 @@ import { errorMiddleware } from '@/middleware/error.middleware';
 import { v1Router } from '@/routes/v1/index';
 import { registerGoogleStrategy } from '@/auth/oauth/google.strategy';
 import { env } from '@/config/env';
+import { sendFail } from '@/lib/response';
 
 registerGoogleStrategy();
 
@@ -33,7 +34,7 @@ export function createApp(): express.Application {
   app.use('/v1', v1Router);
 
   app.use((_req, res) => {
-    res.status(404).json({ data: null, meta: null, error: { code: 'NOT_FOUND', message: 'Route not found' } });
+    sendFail(res, 404, 'NOT_FOUND', 'Route not found');
   });
 
   app.use(errorMiddleware);

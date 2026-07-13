@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { authService } from '@/auth/auth.service';
 import { AppError } from '@/lib/errors';
+import { sendOk, sendNoContent } from '@/lib/response';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -24,7 +25,7 @@ export const authController = {
         throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
       }
       const result = await authService.login(parsed.data);
-      res.status(200).json({ data: result, meta: null, error: null });
+      sendOk(res, result);
     } catch (err) {
       next(err);
     }
@@ -37,7 +38,7 @@ export const authController = {
         throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
       }
       const result = await authService.refresh(parsed.data.refreshToken);
-      res.status(200).json({ data: result, meta: null, error: null });
+      sendOk(res, result);
     } catch (err) {
       next(err);
     }
@@ -50,7 +51,7 @@ export const authController = {
         throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
       }
       await authService.logout(parsed.data.refreshToken);
-      res.status(204).end();
+      sendNoContent(res);
     } catch (err) {
       next(err);
     }
