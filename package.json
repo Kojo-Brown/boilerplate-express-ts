@@ -14,8 +14,11 @@
     "migrate:create": "node-pg-migrate create --migrations-dir migrations"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.750.0",
+    "@aws-sdk/s3-request-presigner": "^3.750.0",
     "argon2": "^0.43.0",
     "express": "^5.0.1",
+    "multer": "^1.4.5-lts.1",
     "node-pg-migrate": "^7.7.0",
     "pg": "^8.13.3",
     "express-rate-limit": "^7.5.0",
@@ -30,6 +33,7 @@
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/express": "^5.0.0",
+    "@types/multer": "^1.4.12",
     "@types/express-session": "^1.17.10",
     "@types/jest": "^29.5.14",
     "@types/jsonwebtoken": "^9.0.8",
