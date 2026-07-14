@@ -30,5 +30,5 @@
 
 ## Phase 5 — Testing & DevOps
 - [x] Jest + Supertest E2E tests for auth + CRUD
-- [ ] GitHub Actions: lint → typecheck → test → build → Docker push
+- [x] GitHub Actions: lint → typecheck → test → build → Docker push
 - [ ] Multi-stage Dockerfile + docker-compose with postgres
