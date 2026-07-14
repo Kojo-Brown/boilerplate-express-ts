@@ -1,0 +1,4 @@
+version: 2
+# Workflow templates contain placeholder/ephemeral credentials only — not real secrets.
+ignore-paths:
+  - workflow-templates/
