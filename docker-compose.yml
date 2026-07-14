@@ -5,15 +5,15 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: boilerplate
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-boilerplate}
     ports:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres -d boilerplate']
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-boilerplate}']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -31,22 +31,22 @@ services:
     environment:
       NODE_ENV: production
       PORT: 4000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/boilerplate
-      JWT_ACCESS_SECRET: change-this-to-a-random-secret-at-least-32-chars!!
-      JWT_REFRESH_SECRET: change-this-to-another-random-secret-at-least-32!!
-      JWT_ACCESS_EXPIRES_IN: 15m
-      JWT_REFRESH_EXPIRES_IN: 7d
-      CORS_ORIGIN: http://localhost:3000
-      SESSION_SECRET: change-this-to-a-random-secret-at-least-32-chars!!
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-boilerplate}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
       # Optional — leave empty to disable OAuth / S3 locally
-      GOOGLE_CLIENT_ID: ''
-      GOOGLE_CLIENT_SECRET: ''
-      GOOGLE_CALLBACK_URL: http://localhost:4000/v1/auth/oauth/google/callback
-      AWS_REGION: us-east-1
-      AWS_ACCESS_KEY_ID: ''
-      AWS_SECRET_ACCESS_KEY: ''
-      S3_BUCKET: ''
-      S3_PRESIGNED_EXPIRES_IN: '3600'
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL:-http://localhost:4000/v1/auth/oauth/google/callback}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PRESIGNED_EXPIRES_IN: ${S3_PRESIGNED_EXPIRES_IN:-3600}
     ports:
       - '4000:4000'
     healthcheck:
