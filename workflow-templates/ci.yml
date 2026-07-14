@@ -75,15 +75,18 @@ jobs:
       NODE_ENV: test
       PORT: "4000"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/boilerplate_test
-      JWT_ACCESS_SECRET: ci-test-access-secret-at-least-32-chars!!
-      JWT_REFRESH_SECRET: ci-test-refresh-secret-at-least-32-chars!!
       JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_EXPIRES_IN: 7d
       CORS_ORIGIN: http://localhost:3000
-      SESSION_SECRET: ci-test-session-secret-at-least-32-chars!!
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Generate ephemeral CI secrets
+        run: |
+          printf 'JWT_ACCESS_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'JWT_REFRESH_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@v4
         with:
