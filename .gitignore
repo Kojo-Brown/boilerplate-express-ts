@@ -3,3 +3,6 @@ dist
 .env
 *.log
 coverage
+
+# macOS
+.DS_Store
