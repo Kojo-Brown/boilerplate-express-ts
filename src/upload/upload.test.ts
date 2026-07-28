@@ -11,7 +11,10 @@ import { uploadController } from '@/upload/upload.controller';
 import * as s3Service from '@/upload/s3.service';
 import type { PresignBody } from '@/upload/upload.types';
 
-type MockedFn<T extends (...args: unknown[]) => unknown> = jest.MockedFunction<T>;
+// `unknown[]` as the parameter constraint is contravariantly wrong — no
+// concretely-typed function satisfies it. `never[]` is the constraint that
+// actually accepts every function signature.
+type MockedFn<T extends (...args: never[]) => unknown> = jest.MockedFunction<T>;
 
 const mockGeneratePresignedPutUrl = s3Service.generatePresignedPutUrl as MockedFn<
   typeof s3Service.generatePresignedPutUrl

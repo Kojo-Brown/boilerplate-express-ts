@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { createApp } from '@/app';
+import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
 
 // env vars are set in jest.setup.ts
 
@@ -9,6 +10,12 @@ jest.mock('@/lib/password', () => ({
 }));
 
 const app = createApp();
+
+// The login limiter allows five attempts per window per IP; this suite makes
+// far more than that, so each case starts from a cleared budget.
+beforeEach(async () => {
+  await resetRateLimiters();
+});
 
 describe('POST /v1/auth/login', () => {
   it('returns 200 with tokens on valid credentials', async () => {

@@ -1,16 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken } from '@/lib/jwt';
 import { AppError } from '@/lib/errors';
-import type { JwtPayload } from '@/auth/auth.types';
-
-declare global {
-  namespace Express {
-    interface Request {
-      user?: JwtPayload;
-    }
-  }
-}
-
 export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
 
@@ -22,7 +12,7 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
   const token = authHeader.slice(7);
 
   try {
-    req.user = verifyAccessToken(token);
+    req.auth = verifyAccessToken(token);
     next();
   } catch (err) {
     next(err);
@@ -31,12 +21,14 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
 
 export function requireRole(...roles: string[]): (req: Request, _res: Response, next: NextFunction) => void {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    if (!req.user) {
+    const principal = req.auth;
+
+    if (!principal) {
       next(new AppError(401, 'Authentication required', 'UNAUTHORIZED'));
       return;
     }
 
-    const hasRole = roles.some((role) => req.user!.roles.includes(role));
+    const hasRole = roles.some((role) => principal.roles.includes(role));
 
     if (!hasRole) {
       next(new AppError(403, 'Insufficient permissions', 'FORBIDDEN'));

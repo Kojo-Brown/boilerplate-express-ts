@@ -1,10 +1,19 @@
-import { rateLimit } from 'express-rate-limit';
+import { MemoryStore, rateLimit } from 'express-rate-limit';
 import type { NextFunction, Request, Response } from 'express';
 
+const stores: MemoryStore[] = [];
+
 function createRateLimiter(windowMs: number, limit: number, message: string) {
+  // Each limiter owns an explicit store so counters can be cleared between
+  // test cases — the limiters below are module singletons, so otherwise one
+  // suite's requests spend the budget belonging to the next.
+  const store = new MemoryStore();
+  stores.push(store);
+
   return rateLimit({
     windowMs,
     limit,
+    store,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     handler: (_req: Request, res: Response, _next: NextFunction) => {
@@ -40,3 +49,11 @@ export const oauthRateLimiter = createRateLimiter(
   10,
   'Too many OAuth requests. Please try again in 15 minutes.',
 );
+
+/**
+ * Clears every limiter's counters. Intended for test setup, where each case
+ * should start from a clean budget instead of inheriting the previous one's.
+ */
+export async function resetRateLimiters(): Promise<void> {
+  await Promise.all(stores.map((store) => store.resetAll()));
+}

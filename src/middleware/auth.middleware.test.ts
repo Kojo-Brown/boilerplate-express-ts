@@ -60,7 +60,7 @@ describe('requireAuth', () => {
     expect(next).toHaveBeenCalledWith(tokenError);
   });
 
-  it('attaches decoded payload to req.user and calls next() on a valid token', () => {
+  it('attaches decoded payload to req.auth and calls next() on a valid token', () => {
     const payload: JwtPayload = { userId: 'u1', roles: ['user'], type: 'access' };
     mockVerifyAccessToken.mockReturnValue(payload);
 
@@ -70,7 +70,7 @@ describe('requireAuth', () => {
     requireAuth(req, mockRes(), next);
 
     expect(mockVerifyAccessToken).toHaveBeenCalledWith('valid.jwt.token');
-    expect((req as Request & { user: JwtPayload }).user).toEqual(payload);
+    expect(req.auth).toEqual(payload);
     expect(next).toHaveBeenCalledWith();
   });
 });
@@ -78,7 +78,7 @@ describe('requireAuth', () => {
 describe('requireRole', () => {
   const basePayload: JwtPayload = { userId: 'u1', roles: ['user'], type: 'access' };
 
-  it('calls next with 401 AppError when req.user is not set', () => {
+  it('calls next with 401 AppError when req.auth is not set', () => {
     const req = mockReq();
     const next = jest.fn() as unknown as NextFunction;
 
@@ -91,8 +91,8 @@ describe('requireRole', () => {
   });
 
   it('calls next with 403 AppError when user does not have the required role', () => {
-    const req = mockReq() as Request & { user: JwtPayload };
-    req.user = { ...basePayload, roles: ['user'] };
+    const req = mockReq();
+    req.auth = { ...basePayload, roles: ['user'] };
     const next = jest.fn() as unknown as NextFunction;
 
     requireRole('admin')(req, mockRes(), next);
@@ -104,8 +104,8 @@ describe('requireRole', () => {
   });
 
   it('calls next() when user has the single required role', () => {
-    const req = mockReq() as Request & { user: JwtPayload };
-    req.user = { ...basePayload, roles: ['admin'] };
+    const req = mockReq();
+    req.auth = { ...basePayload, roles: ['admin'] };
     const next = jest.fn() as unknown as NextFunction;
 
     requireRole('admin')(req, mockRes(), next);
@@ -114,8 +114,8 @@ describe('requireRole', () => {
   });
 
   it('calls next() when user has at least one of the required roles', () => {
-    const req = mockReq() as Request & { user: JwtPayload };
-    req.user = { ...basePayload, roles: ['moderator'] };
+    const req = mockReq();
+    req.auth = { ...basePayload, roles: ['moderator'] };
     const next = jest.fn() as unknown as NextFunction;
 
     requireRole('admin', 'moderator', 'editor')(req, mockRes(), next);
@@ -124,8 +124,8 @@ describe('requireRole', () => {
   });
 
   it('calls next with 403 when user has none of the required roles', () => {
-    const req = mockReq() as Request & { user: JwtPayload };
-    req.user = { ...basePayload, roles: ['user'] };
+    const req = mockReq();
+    req.auth = { ...basePayload, roles: ['user'] };
     const next = jest.fn() as unknown as NextFunction;
 
     requireRole('admin', 'moderator')(req, mockRes(), next);
@@ -135,8 +135,8 @@ describe('requireRole', () => {
   });
 
   it('supports multiple roles on the same user', () => {
-    const req = mockReq() as Request & { user: JwtPayload };
-    req.user = { ...basePayload, roles: ['user', 'admin'] };
+    const req = mockReq();
+    req.auth = { ...basePayload, roles: ['user', 'admin'] };
     const next = jest.fn() as unknown as NextFunction;
 
     requireRole('admin')(req, mockRes(), next);

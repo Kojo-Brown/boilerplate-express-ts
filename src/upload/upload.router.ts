@@ -8,7 +8,7 @@ import { uploadController } from '@/upload/upload.controller';
 import { presignBodySchema } from '@/upload/upload.types';
 import { AppError } from '@/lib/errors';
 
-const uploadRouter = Router();
+const uploadRouter: Router = Router();
 
 function multerErrorHandler(
   err: unknown,

@@ -16,12 +16,14 @@ describe('getPool', () => {
   let getPool: () => Pool;
   let closePool: () => Promise<void>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     MockPool.mockClear();
     mockEnd.mockClear();
     mockOn.mockClear();
-    jest.isolateModules(() => {
-      const db = require('@/db/pool') as typeof import('@/db/pool');
+    // The pool is a module-level singleton, so each test needs a fresh copy of
+    // the module registry rather than a shared import.
+    await jest.isolateModulesAsync(async () => {
+      const db = await import('@/db/pool');
       getPool = db.getPool;
       closePool = db.closePool;
     });

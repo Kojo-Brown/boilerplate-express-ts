@@ -9,6 +9,9 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // `interface X extends Y {}` with an empty body is the only way to merge a
+      // shape into a third-party global interface (see src/types/express.d.ts).
+      '@typescript-eslint/no-empty-object-type': ['error', { allowInterfaces: 'with-single-extends' }],
     },
   },
 );
