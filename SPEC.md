@@ -3,7 +3,7 @@
 > Spec-driven. Mark `[x]` only after pushing.
 
 ## Phase 0 — Green Baseline (blocks all feature work)
-- [ ] Verify every dependency version actually exists on the registry and fix the ones that do not, then commit a lockfile
+- [x] Verify every dependency version actually exists on the registry and fix the ones that do not, then commit a lockfile
 - [ ] Get `install`, `typecheck`, `lint`, `test`, and `build` all passing locally from a clean clone
 - [ ] Promote `workflow-templates/ci.yml` to `.github/workflows/ci.yml` and confirm it runs green on a PR
 - [ ] Add a CI job matrix covering the supported Node version and fail the build on any warning
