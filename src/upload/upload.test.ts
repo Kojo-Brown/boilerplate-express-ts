@@ -11,12 +11,10 @@ import { uploadController } from '@/upload/upload.controller';
 import * as s3Service from '@/upload/s3.service';
 import type { PresignBody } from '@/upload/upload.types';
 
-type MockedFn<T extends (...args: unknown[]) => unknown> = jest.MockedFunction<T>;
-
-const mockGeneratePresignedPutUrl = s3Service.generatePresignedPutUrl as MockedFn<
+const mockGeneratePresignedPutUrl = s3Service.generatePresignedPutUrl as jest.MockedFunction<
   typeof s3Service.generatePresignedPutUrl
 >;
-const mockUploadToS3 = s3Service.uploadToS3 as MockedFn<typeof s3Service.uploadToS3>;
+const mockUploadToS3 = s3Service.uploadToS3 as jest.MockedFunction<typeof s3Service.uploadToS3>;
 
 function makeRes(): Response {
   const res = {} as Response;

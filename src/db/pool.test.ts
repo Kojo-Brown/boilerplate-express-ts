@@ -16,12 +16,15 @@ describe('getPool', () => {
   let getPool: () => Pool;
   let closePool: () => Promise<void>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     MockPool.mockClear();
     mockEnd.mockClear();
     mockOn.mockClear();
-    jest.isolateModules(() => {
-      const db = require('@/db/pool') as typeof import('@/db/pool');
+    // The pool is a module-level singleton, so each test needs it re-evaluated
+    // in a fresh registry. `isolateModulesAsync` is the variant that lets the
+    // reload use a dynamic `import()` rather than a bare `require()`.
+    await jest.isolateModulesAsync(async () => {
+      const db = await import('@/db/pool');
       getPool = db.getPool;
       closePool = db.closePool;
     });

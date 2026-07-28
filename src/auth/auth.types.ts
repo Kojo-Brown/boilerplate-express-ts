@@ -2,6 +2,13 @@ export interface JwtPayload {
   userId: string;
   roles: string[];
   type: 'access' | 'refresh';
+  /**
+   * Unique token id. `iat` only has second resolution, so without a random
+   * claim two tokens minted for the same user within the same second are
+   * byte-identical — which silently defeats refresh-token rotation and the
+   * reuse detection built on top of it.
+   */
+  jti: string;
   iat?: number;
   exp?: number;
 }

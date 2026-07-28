@@ -1,15 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken } from '@/lib/jwt';
 import { AppError } from '@/lib/errors';
-import type { JwtPayload } from '@/auth/auth.types';
-
-declare global {
-  namespace Express {
-    interface Request {
-      user?: JwtPayload;
-    }
-  }
-}
 
 export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;

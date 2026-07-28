@@ -4,7 +4,7 @@ import { uploadRouter } from '@/upload/upload.router';
 import { usersRouter } from '@/users/users.router';
 import { sendOk } from '@/lib/response';
 
-const v1Router = Router();
+const v1Router: Router = Router();
 
 v1Router.use('/auth', authRouter);
 v1Router.use('/uploads', uploadRouter);

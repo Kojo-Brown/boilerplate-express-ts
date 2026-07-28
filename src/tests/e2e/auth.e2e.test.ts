@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { createApp } from '@/app';
+import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
 
 // env vars are set in jest.setup.ts
 
@@ -9,6 +10,13 @@ jest.mock('@/lib/password', () => ({
 }));
 
 const app = createApp();
+
+// The login/refresh limiters are process-wide singletons keyed by client IP,
+// and this file drives well past their ceilings. Reset between cases so a
+// test's result never depends on how many requests ran before it.
+beforeEach(() => {
+  resetRateLimiters();
+});
 
 describe('POST /v1/auth/login', () => {
   it('returns 200 with tokens on valid credentials', async () => {

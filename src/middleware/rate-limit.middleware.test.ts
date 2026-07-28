@@ -17,6 +17,11 @@ jest.mock('express-rate-limit', () => ({
     capturedOpts.push(opts);
     return Object.assign(mw, { __opts: opts });
   }),
+  // The module under test constructs one store per limiter so it can clear
+  // counters; this stand-in only needs the surface it actually touches.
+  MemoryStore: class {
+    resetAll(): void {}
+  },
 }));
 
 // Imports are hoisted after jest.mock

@@ -13,7 +13,10 @@ export async function hashPassword(plain: string): Promise<string> {
 
 export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
   try {
-    return await argon2.verify(hash, plain, { type: argon2.argon2id });
+    // Verification reads the variant and cost parameters from the encoded
+    // digest itself, so `verify` only accepts a pepper (`secret`) — passing
+    // `type` here is not just redundant, it is rejected by argon2's types.
+    return await argon2.verify(hash, plain);
   } catch {
     return false;
   }

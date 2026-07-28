@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { createApp } from '@/app';
+import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
 import type { UserRow } from '@/users/users.repository';
 
 // env vars are set in jest.setup.ts
@@ -58,6 +59,9 @@ beforeEach(() => {
   mockQuery.mockReset();
   mockQueryOne.mockReset();
   mockQueryCount.mockReset();
+  // Every case logs in to mint a token, which shares the process-wide login
+  // limiter (5 per window) with every other case in the file.
+  resetRateLimiters();
 });
 
 describe('GET /v1/users (admin only)', () => {

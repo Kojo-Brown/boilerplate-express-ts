@@ -102,12 +102,15 @@ export abstract class BaseRepository<
       this.hasTimestamps ? ['id', 'created_at', 'updated_at'] : ['id'],
     );
     const entries = Object.entries(data).filter(([k]) => !protectedCols.has(k));
+    // Bail out before adding the timestamp clause: with `hasTimestamps` on, an
+    // empty patch would otherwise emit `SET "updated_at" = NOW()` and touch the
+    // row even though no column actually changed.
+    if (entries.length === 0) return this.findById(id);
     const setClauses: string[] = entries.map(([k], i) => `"${k}" = $${i + 1}`);
     const values: unknown[] = entries.map(([, v]) => v);
     if (this.hasTimestamps) {
       setClauses.push('"updated_at" = NOW()');
     }
-    if (setClauses.length === 0) return this.findById(id);
     values.push(id);
     return queryOne<TRow>(
       `UPDATE "${this.tableName}" SET ${setClauses.join(', ')} WHERE id = $${values.length} RETURNING *`,

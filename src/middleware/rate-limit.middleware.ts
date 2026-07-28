@@ -1,10 +1,17 @@
-import { rateLimit } from 'express-rate-limit';
+import { rateLimit, MemoryStore } from 'express-rate-limit';
 import type { NextFunction, Request, Response } from 'express';
 
+const stores: MemoryStore[] = [];
+
 function createRateLimiter(windowMs: number, limit: number, message: string) {
+  // Hold the store so counters can be cleared; see `resetRateLimiters`.
+  const store = new MemoryStore();
+  stores.push(store);
+
   return rateLimit({
     windowMs,
     limit,
+    store,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
     handler: (_req: Request, res: Response, _next: NextFunction) => {
@@ -40,3 +47,18 @@ export const oauthRateLimiter = createRateLimiter(
   10,
   'Too many OAuth requests. Please try again in 15 minutes.',
 );
+
+/**
+ * Clears every limiter's counters.
+ *
+ * The limiters are module-level singletons keyed by client IP, so a test file
+ * driving more than `limit` requests through one of these routes starts
+ * collecting 429s partway through the run — and which case trips it depends on
+ * test order. Integration suites call this between cases to keep each one
+ * independent.
+ */
+export function resetRateLimiters(): void {
+  for (const store of stores) {
+    store.resetAll();
+  }
+}

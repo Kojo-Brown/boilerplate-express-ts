@@ -61,7 +61,7 @@ describe('requireAuth', () => {
   });
 
   it('attaches decoded payload to req.user and calls next() on a valid token', () => {
-    const payload: JwtPayload = { userId: 'u1', roles: ['user'], type: 'access' };
+    const payload: JwtPayload = { userId: 'u1', roles: ['user'], type: 'access', jti: 'mock-jti-1' };
     mockVerifyAccessToken.mockReturnValue(payload);
 
     const req = mockReq({ headers: { authorization: 'Bearer valid.jwt.token' } });
@@ -76,7 +76,7 @@ describe('requireAuth', () => {
 });
 
 describe('requireRole', () => {
-  const basePayload: JwtPayload = { userId: 'u1', roles: ['user'], type: 'access' };
+  const basePayload: JwtPayload = { userId: 'u1', roles: ['user'], type: 'access', jti: 'mock-jti-1' };
 
   it('calls next with 401 AppError when req.user is not set', () => {
     const req = mockReq();

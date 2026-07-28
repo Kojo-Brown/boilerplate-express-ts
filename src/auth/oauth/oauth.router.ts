@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { oauthController } from '@/auth/oauth/oauth.controller';
 import { oauthRateLimiter } from '@/middleware/rate-limit.middleware';
 
-const router = Router();
+const router: Router = Router();
 
 router.get('/google', oauthRateLimiter, oauthController.initiateGoogle);
 router.get('/google/callback', oauthController.handleGoogleCallback);

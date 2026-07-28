@@ -1,19 +1,22 @@
+import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { env } from '@/config/env';
 import { AppError } from '@/lib/errors';
 import type { JwtPayload, TokenPair } from '@/auth/auth.types';
 
-export function signAccessToken(payload: Omit<JwtPayload, 'type' | 'iat' | 'exp'>): string {
+type SignablePayload = Omit<JwtPayload, 'type' | 'jti' | 'iat' | 'exp'>;
+
+export function signAccessToken(payload: SignablePayload): string {
   return jwt.sign(
-    { ...payload, type: 'access' },
+    { ...payload, type: 'access', jti: randomUUID() },
     env.JWT_ACCESS_SECRET,
     { expiresIn: env.JWT_ACCESS_EXPIRES_IN } as jwt.SignOptions,
   );
 }
 
-export function signRefreshToken(payload: Omit<JwtPayload, 'type' | 'iat' | 'exp'>): string {
+export function signRefreshToken(payload: SignablePayload): string {
   return jwt.sign(
-    { ...payload, type: 'refresh' },
+    { ...payload, type: 'refresh', jti: randomUUID() },
     env.JWT_REFRESH_SECRET,
     { expiresIn: env.JWT_REFRESH_EXPIRES_IN } as jwt.SignOptions,
   );
