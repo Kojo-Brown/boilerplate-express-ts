@@ -4,8 +4,8 @@
 
 ## Phase 0 — Green Baseline (blocks all feature work)
 - [x] Verify every dependency version actually exists on the registry and fix the ones that do not, then commit a lockfile
-- [ ] Get `install`, `typecheck`, `lint`, `test`, and `build` all passing locally from a clean clone
-- [ ] Promote `workflow-templates/ci.yml` to `.github/workflows/ci.yml` and confirm it runs green on a PR
+- [x] Get `install`, `typecheck`, `lint`, `test`, and `build` all passing locally from a clean clone
+- [x] Promote `workflow-templates/ci.yml` to `.github/workflows/ci.yml` and confirm it runs green on a PR
 - [ ] Add a CI job matrix covering the supported Node version and fail the build on any warning
 
 ## Phase 1 — Foundation
