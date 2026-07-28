@@ -13,7 +13,9 @@ export async function hashPassword(plain: string): Promise<string> {
 
 export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
   try {
-    return await argon2.verify(hash, plain, { type: argon2.argon2id });
+    // No options: argon2 reads the variant and cost parameters back out of the
+    // encoded digest. `verify` only accepts a `secret`, which we do not use.
+    return await argon2.verify(hash, plain);
   } catch {
     return false;
   }

@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { createApp } from '@/app';
+import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
 import type { UserRow } from '@/users/users.repository';
 
 // env vars are set in jest.setup.ts
@@ -54,10 +55,13 @@ async function getUserToken(): Promise<string> {
   return (res.body.data as { accessToken: string }).accessToken;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   mockQuery.mockReset();
   mockQueryOne.mockReset();
   mockQueryCount.mockReset();
+  // Every case logs in to get a token, and the login limiter allows only five
+  // attempts per window per IP — without a reset the suite throttles itself.
+  await resetRateLimiters();
 });
 
 describe('GET /v1/users (admin only)', () => {

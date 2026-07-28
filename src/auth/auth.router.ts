@@ -3,7 +3,7 @@ import { authController } from '@/auth/auth.controller';
 import { oauthRouter } from '@/auth/oauth/oauth.router';
 import { loginRateLimiter, refreshRateLimiter } from '@/middleware/rate-limit.middleware';
 
-const router = Router();
+const router: Router = Router();
 
 router.post('/login', loginRateLimiter, authController.login);
 router.post('/refresh', refreshRateLimiter, authController.refresh);

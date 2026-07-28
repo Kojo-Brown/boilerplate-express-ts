@@ -2,6 +2,8 @@ export interface JwtPayload {
   userId: string;
   roles: string[];
   type: 'access' | 'refresh';
+  /** Unique per token. Two tokens minted in the same second are still distinct. */
+  jti?: string;
   iat?: number;
   exp?: number;
 }

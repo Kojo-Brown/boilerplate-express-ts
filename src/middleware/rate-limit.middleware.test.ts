@@ -6,10 +6,13 @@ type CapturedOpts = {
   limit: number;
   standardHeaders: string;
   legacyHeaders: boolean;
+  store: unknown;
   handler: RateLimitHandler;
 };
 
 const capturedOpts: CapturedOpts[] = [];
+
+const mockResetAll = jest.fn();
 
 jest.mock('express-rate-limit', () => ({
   rateLimit: jest.fn((opts: CapturedOpts) => {
@@ -17,10 +20,18 @@ jest.mock('express-rate-limit', () => ({
     capturedOpts.push(opts);
     return Object.assign(mw, { __opts: opts });
   }),
+  MemoryStore: jest.fn(function MockMemoryStore(this: { resetAll: () => void }) {
+    this.resetAll = mockResetAll;
+  }),
 }));
 
 // Imports are hoisted after jest.mock
-import { loginRateLimiter, oauthRateLimiter, refreshRateLimiter } from '@/middleware/rate-limit.middleware';
+import {
+  loginRateLimiter,
+  oauthRateLimiter,
+  refreshRateLimiter,
+  resetRateLimiters,
+} from '@/middleware/rate-limit.middleware';
 
 function mockRes(): Response {
   const res = {
@@ -91,6 +102,23 @@ describe('rate-limit.middleware', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ data: null, meta: null, error: expect.objectContaining({ code: 'TOO_MANY_REQUESTS' }) }),
       );
+    });
+  });
+
+  describe('resetRateLimiters', () => {
+    it('clears the counters of every limiter store', async () => {
+      mockResetAll.mockClear();
+
+      await resetRateLimiters();
+
+      // one store per exported limiter: login, refresh, oauth
+      expect(mockResetAll).toHaveBeenCalledTimes(3);
+    });
+
+    it('passes a store to each limiter so its counters can be cleared', () => {
+      for (const mw of [loginRateLimiter, refreshRateLimiter, oauthRateLimiter]) {
+        expect(getOpts(mw).store).toBeDefined();
+      }
     });
   });
 
