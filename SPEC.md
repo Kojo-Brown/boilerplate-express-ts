@@ -6,7 +6,7 @@
 - [x] Verify every dependency version actually exists on the registry and fix the ones that do not, then commit a lockfile
 - [x] Get `install`, `typecheck`, `lint`, `test`, and `build` all passing locally from a clean clone
 - [x] Promote `workflow-templates/ci.yml` to `.github/workflows/ci.yml` and confirm it runs green on a PR
-- [ ] Add a CI job matrix covering the supported Node version and fail the build on any warning
+- [x] Add a CI job matrix covering the supported Node version and fail the build on any warning — `engines.node` narrowed to `^22.12.0 || ^24.0.0`; lint, typecheck, test, and build run on both majors with `--strict-peer-dependencies`, `--max-warnings=0`, and `NODE_OPTIONS=--throw-deprecation` (PR #22)
 
 ## Phase 1 — Foundation
 - [x] Express 5 + TypeScript 6 scaffold with strict tsconfig and `@/` path alias
