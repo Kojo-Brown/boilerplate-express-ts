@@ -27,5 +27,26 @@ pnpm db:migrate
 pnpm dev  # http://localhost:4000/v1
 ```
 
+## Supported Node versions
+
+`engines.node` is `^22.12.0 || ^24.0.0` — the two Node release lines still under
+LTS. CI runs lint, typecheck, test, and build against **both** majors, so a
+change that only works on one of them fails before it reaches `main`.
+
+Warnings are failures in CI, on every major:
+
+| Source of warning | How it fails the build |
+|-------------------|------------------------|
+| Unmet peer dependency ranges | `pnpm install --strict-peer-dependencies` |
+| ESLint rules configured as `warn` | `pnpm lint` runs `eslint --max-warnings=0` |
+| Node runtime deprecations (ours or a dependency's) | `NODE_OPTIONS=--throw-deprecation` on every gate step |
+
+To reproduce a CI failure locally, run the gate with the same flags:
+
+```bash
+pnpm install --frozen-lockfile --strict-peer-dependencies
+NODE_OPTIONS=--throw-deprecation pnpm test
+```
+
 ## Spec Progress
 See [SPEC.md](./SPEC.md).

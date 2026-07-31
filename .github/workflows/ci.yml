@@ -10,10 +10,27 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
+# Every gate runs on each Node major in `engines.node` and treats warnings as
+# failures:
+#   - `pnpm install --strict-peer-dependencies` turns an unmet peer range from a
+#     log warning into a non-zero exit.
+#   - `pnpm lint` passes `--max-warnings=0`, so a rule set to "warn" fails the
+#     job instead of scrolling past in the log.
+#   - `NODE_OPTIONS: --throw-deprecation` promotes Node runtime deprecation
+#     warnings to thrown errors, so a deprecated API — ours or a dependency's —
+#     surfaces on the oldest and the newest supported runtime rather than at the
+#     point where that API is finally removed.
+# `--pending-deprecation` is deliberately not set: it flags APIs that are not
+# deprecated yet, which would fail the build on advisory notices.
+
 jobs:
   lint:
-    name: Lint
+    name: Lint (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
 
@@ -21,18 +38,24 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --strict-peer-dependencies
 
       - name: Lint
         run: pnpm lint
+        env:
+          NODE_OPTIONS: --throw-deprecation
 
   typecheck:
-    name: Typecheck
+    name: Typecheck (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
 
@@ -40,18 +63,24 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --strict-peer-dependencies
 
       - name: Typecheck
         run: pnpm typecheck
+        env:
+          NODE_OPTIONS: --throw-deprecation
 
   test:
-    name: Test
+    name: Test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
     services:
       postgres:
         image: postgres:16-alpine
@@ -88,21 +117,29 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --strict-peer-dependencies
 
       - name: Run migrations
         run: pnpm migrate
+        env:
+          NODE_OPTIONS: --throw-deprecation
 
       - name: Run tests
         run: pnpm test --passWithNoTests
+        env:
+          NODE_OPTIONS: --throw-deprecation
 
   build:
-    name: Build
+    name: Build (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@v4
 
@@ -110,19 +147,21 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --strict-peer-dependencies
 
       - name: Build TypeScript
         run: pnpm build
+        env:
+          NODE_OPTIONS: --throw-deprecation
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: dist-node-${{ matrix.node-version }}
           path: dist/
           retention-days: 1
 
