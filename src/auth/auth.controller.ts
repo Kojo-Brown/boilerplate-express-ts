@@ -1,56 +1,36 @@
 import type { Request, Response, NextFunction } from 'express';
-import { z } from 'zod';
 import { authService } from '@/auth/auth.service';
-import { AppError } from '@/lib/errors';
 import { sendOk, sendNoContent } from '@/lib/response';
+import type { LoginBody, LogoutBody, RefreshBody } from '@/auth/auth.schemas';
 
-const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
-});
+type BodyOf<T> = Request<Record<string, string>, unknown, T>;
 
-const refreshSchema = z.object({
-  refreshToken: z.string().min(1),
-});
-
-const logoutSchema = z.object({
-  refreshToken: z.string().min(1),
-});
-
+/**
+ * Transport only: call the service, shape the response, hand errors to the
+ * error middleware. Bodies arrive already parsed by `validate()` on the router.
+ */
 export const authController = {
-  async login(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async login(req: BodyOf<LoginBody>, res: Response, next: NextFunction): Promise<void> {
     try {
-      const parsed = loginSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
-      }
-      const result = await authService.login(parsed.data);
+      const result = await authService.login(req.body);
       sendOk(res, result);
     } catch (err) {
       next(err);
     }
   },
 
-  async refresh(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async refresh(req: BodyOf<RefreshBody>, res: Response, next: NextFunction): Promise<void> {
     try {
-      const parsed = refreshSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
-      }
-      const result = await authService.refresh(parsed.data.refreshToken);
+      const result = await authService.refresh(req.body.refreshToken);
       sendOk(res, result);
     } catch (err) {
       next(err);
     }
   },
 
-  async logout(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async logout(req: BodyOf<LogoutBody>, res: Response, next: NextFunction): Promise<void> {
     try {
-      const parsed = logoutSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
-      }
-      await authService.logout(parsed.data.refreshToken);
+      await authService.logout(req.body.refreshToken);
       sendNoContent(res);
     } catch (err) {
       next(err);

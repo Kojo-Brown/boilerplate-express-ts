@@ -1,20 +1,24 @@
 import type { Request, Response, NextFunction } from 'express';
-import { AppError, ValidationError } from '@/lib/errors';
+import { translateError } from '@/lib/error-translators';
 import { sendFail } from '@/lib/response';
 
+/**
+ * Terminal error handler. Owns exactly two things: asking the translator
+ * registry what the error means, and logging whatever nothing recognised.
+ *
+ * Adding support for a new error family is a `registerErrorTranslator` call in
+ * the composition root — this function does not change.
+ */
 export function errorMiddleware(
   err: unknown,
   _req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
-  if (err instanceof ValidationError) {
-    sendFail(res, 422, 'VALIDATION_ERROR', err.message, err.issues);
-    return;
-  }
+  const translated = translateError(err);
 
-  if (err instanceof AppError) {
-    sendFail(res, err.statusCode, err.code ?? 'INTERNAL_ERROR', err.message);
+  if (translated !== null) {
+    sendFail(res, translated.statusCode, translated.code, translated.message, translated.issues);
     return;
   }
 

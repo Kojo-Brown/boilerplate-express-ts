@@ -48,5 +48,9 @@ pnpm install --frozen-lockfile --strict-peer-dependencies
 NODE_OPTIONS=--throw-deprecation pnpm test
 ```
 
+## Design notes
+- [SOLID audit](./docs/solid.md) — the five principles applied to this codebase,
+  with the before/after of each refactor they produced.
+
 ## Spec Progress
 See [SPEC.md](./SPEC.md).

@@ -1,4 +1,5 @@
 import request from 'supertest';
+import { DatabaseError } from 'pg';
 import { createApp } from '@/app';
 import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
 import type { UserRow } from '@/users/users.repository';
@@ -286,5 +287,63 @@ describe('DELETE /v1/users/:id (admin only)', () => {
     const res = await request(app).delete('/v1/users/user-uuid-2');
 
     expect(res.status).toBe(401);
+  });
+});
+
+describe('error translation reaches the wire', () => {
+  it('returns 409, not 500, when the email is already taken', async () => {
+    // What Postgres raises against the unique index on users.email.
+    const duplicate = new DatabaseError(
+      'duplicate key value violates unique constraint "users_email_key"',
+      0,
+      'error',
+    );
+    duplicate.code = '23505';
+    mockQueryOne.mockRejectedValue(duplicate);
+    const token = await getAdminToken();
+
+    const res = await request(app)
+      .post('/v1/users')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'alice@example.com' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('UNIQUE_VIOLATION');
+    // The constraint name is an internal detail and must not reach the client.
+    expect(res.body.error.message).not.toContain('users_email_key');
+  });
+
+  it('still returns 500 for a genuine server-side SQL fault', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const undefinedTable = new DatabaseError('relation "users" does not exist', 0, 'error');
+    undefinedTable.code = '42P01';
+    mockQueryOne.mockRejectedValue(undefinedTable);
+    const token = await getAdminToken();
+
+    const res = await request(app)
+      .post('/v1/users')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'charlie@example.com' });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error.code).toBe('INTERNAL_ERROR');
+    consoleSpy.mockRestore();
+  });
+
+  it('returns the failed field in the 422 issues array', async () => {
+    const token = await getAdminToken();
+
+    const res = await request(app)
+      .post('/v1/users')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'not-an-email' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    // Before validation moved to the edge the controller threw a bare
+    // AppError(422) and the client got no way to tell which field was wrong.
+    expect(res.body.error.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: ['email'] })]),
+    );
   });
 });

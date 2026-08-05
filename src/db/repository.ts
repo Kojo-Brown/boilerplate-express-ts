@@ -77,6 +77,37 @@ export abstract class BaseRepository<
     return query<TRow>(sql, params.length > 0 ? params : undefined);
   }
 
+  /**
+   * Rows whose array column *contains* every one of `values` (Postgres `@>`).
+   *
+   * `findWhere` compares for equality, so passing an array to it asks "is this
+   * column exactly this array", which is almost never what a caller with a
+   * `text[]` column means. Subclasses need containment expressed in the base
+   * class's own vocabulary; without it the tempting move is to cast an array
+   * through `WhereCondition` and silently get equality semantics.
+   *
+   * `column` is constrained to the row's own string keys, so it cannot carry
+   * caller-supplied text into the SQL.
+   */
+  protected async findWhereArrayContains(
+    column: Extract<keyof TRow, string>,
+    values: readonly unknown[],
+    options: FindAllOptions = {},
+  ): Promise<TRow[]> {
+    const { orderBy = 'created_at', order = 'ASC', limit, offset } = options;
+    const params: unknown[] = [values];
+    let sql = `SELECT * FROM "${this.tableName}" WHERE "${column}" @> $1 ORDER BY "${orderBy}" ${order}`;
+    if (limit !== undefined) {
+      params.push(limit);
+      sql += ` LIMIT $${params.length}`;
+    }
+    if (offset !== undefined) {
+      params.push(offset);
+      sql += ` OFFSET $${params.length}`;
+    }
+    return query<TRow>(sql, params);
+  }
+
   async create(data: TInsert): Promise<TRow> {
     const entries = Object.entries(data);
     if (entries.length === 0) {
