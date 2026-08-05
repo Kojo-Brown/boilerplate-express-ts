@@ -1,22 +1,19 @@
 import type { Request, Response, NextFunction } from 'express';
-import { z } from 'zod';
 import { userRepository } from '@/users/users.repository';
 import { AppError } from '@/lib/errors';
 import { sendOk, sendCreated, sendNoContent } from '@/lib/response';
+import type { CreateUserBody, UpdateUserBody, UserIdParams } from '@/users/users.schemas';
 
-const createUserSchema = z.object({
-  email: z.string().email(),
-  password_hash: z.string().optional().nullable(),
-  roles: z.array(z.string()).optional(),
-});
+type WithParams<P> = Request<P>;
+type WithParamsAndBody<P, B> = Request<P, unknown, B>;
+type WithBody<B> = Request<Record<string, string>, unknown, B>;
 
-const updateUserSchema = z.object({
-  email: z.string().email().optional(),
-  roles: z.array(z.string()).optional(),
-});
-
+/**
+ * Transport only. Params and bodies arrive already parsed by `validate()` on
+ * the router, so nothing here re-derives them or hand-rolls a 422.
+ */
 export const usersController = {
-  async list(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async list(_req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const users = await userRepository.findAll({ orderBy: 'created_at', order: 'ASC' });
       sendOk(res, users);
@@ -25,9 +22,9 @@ export const usersController = {
     }
   },
 
-  async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async getById(req: WithParams<UserIdParams>, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = await userRepository.findById(req.params['id'] as string);
+      const user = await userRepository.findById(req.params.id);
       if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
       sendOk(res, user);
     } catch (err) {
@@ -35,22 +32,22 @@ export const usersController = {
     }
   },
 
-  async create(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async create(req: WithBody<CreateUserBody>, res: Response, next: NextFunction): Promise<void> {
     try {
-      const parsed = createUserSchema.safeParse(req.body);
-      if (!parsed.success) throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
-      const user = await userRepository.create(parsed.data);
+      const user = await userRepository.create(req.body);
       sendCreated(res, user);
     } catch (err) {
       next(err);
     }
   },
 
-  async update(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async update(
+    req: WithParamsAndBody<UserIdParams, UpdateUserBody>,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
     try {
-      const parsed = updateUserSchema.safeParse(req.body);
-      if (!parsed.success) throw new AppError(422, 'Validation failed', 'VALIDATION_ERROR');
-      const user = await userRepository.update(req.params['id'] as string, parsed.data);
+      const user = await userRepository.update(req.params.id, req.body);
       if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
       sendOk(res, user);
     } catch (err) {
@@ -58,9 +55,9 @@ export const usersController = {
     }
   },
 
-  async remove(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async remove(req: WithParams<UserIdParams>, res: Response, next: NextFunction): Promise<void> {
     try {
-      const deleted = await userRepository.delete(req.params['id'] as string);
+      const deleted = await userRepository.delete(req.params.id);
       if (!deleted) throw new AppError(404, 'User not found', 'NOT_FOUND');
       sendNoContent(res);
     } catch (err) {

@@ -1,5 +1,11 @@
-import { authService } from '@/auth/auth.service';
+import { authService, createAuthService } from '@/auth/auth.service';
 import { tokenStore } from '@/auth/token-store';
+import type {
+  AuthUser,
+  InspectableRefreshTokenStore,
+  RefreshTokenStore,
+  UserDirectory,
+} from '@/auth/auth.types';
 
 // env vars injected via jest.setup.ts before any module is loaded
 
@@ -92,7 +98,7 @@ describe('authService.logout', () => {
 
     await authService.logout(refreshToken);
 
-    expect(tokenStore.has(refreshToken)).toBe(false);
+    await expect(tokenStore.has(refreshToken)).resolves.toBe(false);
   });
 
   it('is idempotent for an already-logged-out token', async () => {
@@ -117,7 +123,108 @@ describe('authService.logoutAll', () => {
 
     await authService.logoutAll('1');
 
-    expect(tokenStore.has(login1.refreshToken)).toBe(false);
-    expect(tokenStore.has(login2.refreshToken)).toBe(false);
+    await expect(tokenStore.has(login1.refreshToken)).resolves.toBe(false);
+    await expect(tokenStore.has(login2.refreshToken)).resolves.toBe(false);
+  });
+});
+
+describe('createAuthService — injected collaborators', () => {
+  // The point of the seam: this suite substitutes both dependencies with plain
+  // objects. No jest.mock of the store or the directory, and nothing here
+  // touches the process-wide singletons the default wiring uses.
+
+  function makeFakeStore(): InspectableRefreshTokenStore & { addCalls: string[] } {
+    const tokens = new Map<string, string>();
+    return {
+      addCalls: [],
+      async add(token: string, userId: string): Promise<void> {
+        this.addCalls.push(userId);
+        tokens.set(token, userId);
+      },
+      async has(token: string): Promise<boolean> {
+        return tokens.has(token);
+      },
+      async remove(token: string): Promise<void> {
+        tokens.delete(token);
+      },
+      async removeAllForUser(userId: string): Promise<void> {
+        for (const [token, uid] of tokens.entries()) {
+          if (uid === userId) tokens.delete(token);
+        }
+      },
+      size: () => tokens.size,
+    };
+  }
+
+  const fakeUser: AuthUser = {
+    id: 'fake-user-1',
+    email: 'injected@example.com',
+    passwordHash: 'not-a-real-hash',
+    roles: ['auditor'],
+  };
+
+  const directory: UserDirectory = {
+    async findByEmail(email: string): Promise<AuthUser | null> {
+      return email === fakeUser.email ? fakeUser : null;
+    },
+  };
+
+  it('logs in against an injected directory the singletons know nothing about', async () => {
+    const tokens = makeFakeStore();
+    const service = createAuthService({ users: directory, tokens });
+
+    const result = await service.login({ email: 'injected@example.com', password: 'password' });
+
+    expect(result.user.id).toBe('fake-user-1');
+    expect(result.user.roles).toEqual(['auditor']);
+  });
+
+  it('writes the refresh token to the injected store, not the default one', async () => {
+    const tokens = makeFakeStore();
+    const before = tokenStore.size();
+    const service = createAuthService({ users: directory, tokens });
+
+    await service.login({ email: 'injected@example.com', password: 'password' });
+
+    expect(tokens.addCalls).toEqual(['fake-user-1']);
+    expect(tokens.size()).toBe(1);
+    expect(tokenStore.size()).toBe(before);
+  });
+
+  it('rejects a user the injected directory does not know', async () => {
+    const service = createAuthService({ users: directory, tokens: makeFakeStore() });
+
+    await expect(
+      service.login({ email: 'admin@example.com', password: 'password' }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  it('rotates through the injected store on refresh', async () => {
+    const tokens = makeFakeStore();
+    const service = createAuthService({ users: directory, tokens });
+
+    const { refreshToken } = await service.login({
+      email: 'injected@example.com',
+      password: 'password',
+    });
+    const rotated = await service.refresh(refreshToken);
+
+    expect(rotated.refreshToken).not.toBe(refreshToken);
+    await expect(tokens.has(refreshToken)).resolves.toBe(false);
+    await expect(tokens.has(rotated.refreshToken)).resolves.toBe(true);
+  });
+
+  it('propagates a failure from the injected store rather than swallowing it', async () => {
+    const failing: RefreshTokenStore = {
+      add: () => Promise.reject(new Error('store unavailable')),
+      has: () => Promise.resolve(false),
+      remove: () => Promise.resolve(),
+      removeAllForUser: () => Promise.resolve(),
+    };
+    const service = createAuthService({ users: directory, tokens: failing });
+
+    await expect(
+      service.login({ email: 'injected@example.com', password: 'password' }),
+    ).rejects.toThrow('store unavailable');
   });
 });

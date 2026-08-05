@@ -24,9 +24,9 @@ export const oauthService = {
     return user;
   },
 
-  issueTokens(user: OAuthUser): TokenPair {
+  async issueTokens(user: OAuthUser): Promise<TokenPair> {
     const tokens = createTokenPair(user.id, user.roles);
-    tokenStore.add(tokens.refreshToken, user.id);
+    await tokenStore.add(tokens.refreshToken, user.id);
     return tokens;
   },
 };

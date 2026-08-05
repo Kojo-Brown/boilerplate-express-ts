@@ -51,7 +51,7 @@ describe('oauthService.issueTokens', () => {
       displayName: 'JWT User',
       email: 'jwtuser@gmail.com',
     });
-    const tokens = oauthService.issueTokens(user);
+    const tokens = await oauthService.issueTokens(user);
 
     expect(typeof tokens.accessToken).toBe('string');
     expect(typeof tokens.refreshToken).toBe('string');

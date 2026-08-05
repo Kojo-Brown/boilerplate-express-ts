@@ -91,3 +91,30 @@ describe('UserRepository inherits BaseRepository', () => {
     );
   });
 });
+
+describe('UserRepository.findByRole', () => {
+  it('asks for containment, not array equality', async () => {
+    mockQuery.mockResolvedValue([]);
+
+    await repo.findByRole('admin');
+
+    const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('"roles" @> $1');
+    expect(sql).not.toContain('"roles" = $1');
+    expect(params).toEqual([['admin']]);
+  });
+
+  it('returns users who hold the role alongside others', async () => {
+    // The equality form this replaced matched only rows whose roles column was
+    // exactly ['admin'], so a user with ['admin','user'] was invisible.
+    const multiRole = makeUser({ id: 'multi', roles: ['admin', 'user'] });
+    mockQuery.mockResolvedValue([multiRole]);
+
+    await expect(repo.findByRole('admin')).resolves.toEqual([multiRole]);
+  });
+
+  it('returns an empty list when nobody holds the role', async () => {
+    mockQuery.mockResolvedValue([]);
+    await expect(repo.findByRole('nobody-has-this')).resolves.toEqual([]);
+  });
+});

@@ -5,10 +5,18 @@ import { correlationIdMiddleware, requestLogger } from '@/middleware/logger.midd
 import { errorMiddleware } from '@/middleware/error.middleware';
 import { v1Router } from '@/routes/v1/index';
 import { registerGoogleStrategy } from '@/auth/oauth/google.strategy';
+import { registerErrorTranslator } from '@/lib/error-translators';
+import { postgresErrorTranslator } from '@/db/db.errors';
+import { multerErrorTranslator } from '@/upload/upload.errors';
 import { env } from '@/config/env';
 import { sendFail } from '@/lib/response';
 
 registerGoogleStrategy();
+
+// Composition root: each module contributes how *its* errors map to responses.
+// The error middleware never learns about Postgres or Multer.
+registerErrorTranslator(postgresErrorTranslator);
+registerErrorTranslator(multerErrorTranslator);
 
 export function createApp(): express.Application {
   const app = express();

@@ -29,8 +29,12 @@ export class UserRepository extends BaseRepository<UserRow, UserInsert, UserUpda
     return this.findOne({ email });
   }
 
+  /**
+   * Users who hold `role`, not users whose role list is exactly `[role]`.
+   * `roles` is `text[]`, so this is a containment test.
+   */
   async findByRole(role: string): Promise<UserRow[]> {
-    return this.findWhere({ roles: [role] as unknown as string[] });
+    return this.findWhereArrayContains('roles', [role]);
   }
 }
 

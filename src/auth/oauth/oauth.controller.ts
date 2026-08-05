@@ -18,16 +18,21 @@ export const oauthController = {
         if (err) return next(err);
         if (!user) return next(new AppError(401, 'Google OAuth failed', 'OAUTH_FAILED'));
 
+        // `destroy` takes a plain callback, so the async work is wrapped and its
+        // rejection routed to `next` explicitly — an async callback handed to
+        // `destroy` would reject into nothing.
         req.session.destroy(() => {
-          try {
-            const tokens = oauthService.issueTokens(user);
-            sendOk(res, {
-              user: { id: user.id, email: user.email, name: user.name, roles: user.roles },
-              ...tokens,
-            });
-          } catch (tokenErr) {
-            next(tokenErr);
-          }
+          void (async (): Promise<void> => {
+            try {
+              const tokens = await oauthService.issueTokens(user);
+              sendOk(res, {
+                user: { id: user.id, email: user.email, name: user.name, roles: user.roles },
+                ...tokens,
+              });
+            } catch (tokenErr) {
+              next(tokenErr);
+            }
+          })();
         });
       },
     )(req, res, next);
