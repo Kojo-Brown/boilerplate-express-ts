@@ -40,7 +40,7 @@
 - [x] Multi-stage Dockerfile + docker-compose with postgres
 
 ## Phase 6 — SOLID & Design Patterns
-- [ ] SOLID audit with before/after refactors documented in `docs/solid.md`
+- [x] SOLID audit with before/after refactors documented in `docs/solid.md` — three of the five findings were live defects, not style: a duplicate email returned 500 because the error middleware was a closed `instanceof` ladder (and `upload.router.ts` had already grown a parallel Multer handler to work around that closure), `findByRole` cast an array through the base class's equality `WHERE` so the seeded admin never matched, and the controllers' hand-rolled 422 discarded Zod's `issues` while `validate.middleware.ts` sat unused (PR #23)
 - [ ] Factory + Registry: `ProviderRegistry` resolving adapters by key with compile-time exhaustiveness
 - [ ] Strategy pattern: swappable `AuthStrategy` (password, magic link, API key)
 - [ ] Decorator pattern: higher-order route handlers `withRetry`, `withTimeout`, `withCache`
