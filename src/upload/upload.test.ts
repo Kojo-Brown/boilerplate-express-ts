@@ -1,14 +1,16 @@
 import type { NextFunction, Request, Response } from 'express';
 import { AppError } from '@/lib/errors';
+import type { StorageProvider } from '@/upload/storage';
 
-jest.mock('@/upload/s3.service', () => ({
-  generatePresignedPutUrl: jest.fn(),
-  uploadToS3: jest.fn(),
-  buildPublicUrl: jest.fn(),
+// The controller resolves its backend from the registry, so that is what gets
+// stubbed. These cases are about the controller's own behaviour — status codes,
+// envelope shape, error forwarding — and they should hold for every driver.
+jest.mock('@/upload/storage', () => ({
+  getStorageProvider: jest.fn(),
 }));
 
 import { uploadController } from '@/upload/upload.controller';
-import * as s3Service from '@/upload/s3.service';
+import { getStorageProvider } from '@/upload/storage';
 import type { PresignBody } from '@/upload/upload.types';
 
 // `unknown[]` as the parameter constraint is contravariantly wrong — no
@@ -16,10 +18,9 @@ import type { PresignBody } from '@/upload/upload.types';
 // actually accepts every function signature.
 type MockedFn<T extends (...args: never[]) => unknown> = jest.MockedFunction<T>;
 
-const mockGeneratePresignedPutUrl = s3Service.generatePresignedPutUrl as MockedFn<
-  typeof s3Service.generatePresignedPutUrl
->;
-const mockUploadToS3 = s3Service.uploadToS3 as MockedFn<typeof s3Service.uploadToS3>;
+const mockGetStorageProvider = getStorageProvider as MockedFn<typeof getStorageProvider>;
+const mockPresignPut = jest.fn() as MockedFn<StorageProvider['presignPut']>;
+const mockPut = jest.fn() as MockedFn<StorageProvider['put']>;
 
 function makeRes(): Response {
   const res = {} as Response;
@@ -36,11 +37,17 @@ function makeNext(): jest.MockedFunction<NextFunction> {
 
 beforeEach(() => {
   jest.resetAllMocks();
+  mockGetStorageProvider.mockReturnValue({
+    driver: 'memory',
+    presignPut: mockPresignPut,
+    put: mockPut,
+    publicUrl: (key: string) => `memory://${key}`,
+  });
 });
 
 describe('uploadController.presign', () => {
   it('responds 200 with presigned URL data on success', async () => {
-    mockGeneratePresignedPutUrl.mockResolvedValue({
+    mockPresignPut.mockResolvedValue({
       presignedUrl: 'https://s3.example.com/presigned-put-url',
       key: 'uploads/abc-123.jpg',
       expiresIn: 3600,
@@ -54,7 +61,7 @@ describe('uploadController.presign', () => {
 
     await uploadController.presign(req, res, next);
 
-    expect(mockGeneratePresignedPutUrl).toHaveBeenCalledWith('photo.jpg', 'image/jpeg');
+    expect(mockPresignPut).toHaveBeenCalledWith('photo.jpg', 'image/jpeg');
     expect(res.status as jest.Mock).toHaveBeenCalledWith(200);
     expect(res.json as jest.Mock).toHaveBeenCalledWith({
       data: {
@@ -68,9 +75,9 @@ describe('uploadController.presign', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('forwards S3 errors to next without sending a response', async () => {
-    const s3Error = new Error('S3 service unavailable');
-    mockGeneratePresignedPutUrl.mockRejectedValue(s3Error);
+  it('forwards storage errors to next without sending a response', async () => {
+    const storageError = new Error('storage backend unavailable');
+    mockPresignPut.mockRejectedValue(storageError);
 
     const req = {
       body: { fileName: 'photo.jpg', contentType: 'image/jpeg', size: 2048 } as PresignBody,
@@ -80,7 +87,7 @@ describe('uploadController.presign', () => {
 
     await uploadController.presign(req, res, next);
 
-    expect(next).toHaveBeenCalledWith(s3Error);
+    expect(next).toHaveBeenCalledWith(storageError);
     expect(res.status as jest.Mock).not.toHaveBeenCalled();
   });
 });
@@ -96,7 +103,7 @@ describe('uploadController.upload', () => {
   } as Express.Multer.File;
 
   it('responds 201 with upload data on success', async () => {
-    mockUploadToS3.mockResolvedValue({
+    mockPut.mockResolvedValue({
       key: 'uploads/uuid-123.png',
       url: 'https://test-bucket.s3.us-east-1.amazonaws.com/uploads/uuid-123.png',
     });
@@ -107,7 +114,7 @@ describe('uploadController.upload', () => {
 
     await uploadController.upload(req, res, next);
 
-    expect(mockUploadToS3).toHaveBeenCalledWith(
+    expect(mockPut).toHaveBeenCalledWith(
       mockFile.buffer,
       mockFile.originalname,
       mockFile.mimetype,
@@ -140,9 +147,9 @@ describe('uploadController.upload', () => {
     expect(res.status as jest.Mock).not.toHaveBeenCalled();
   });
 
-  it('forwards S3 upload errors to next without sending a response', async () => {
-    const s3Error = new Error('PutObject failed');
-    mockUploadToS3.mockRejectedValue(s3Error);
+  it('forwards storage write errors to next without sending a response', async () => {
+    const storageError = new Error('write failed');
+    mockPut.mockRejectedValue(storageError);
 
     const req = { file: mockFile } as Request;
     const res = makeRes();
@@ -150,7 +157,7 @@ describe('uploadController.upload', () => {
 
     await uploadController.upload(req, res, next);
 
-    expect(next).toHaveBeenCalledWith(s3Error);
+    expect(next).toHaveBeenCalledWith(storageError);
     expect(res.status as jest.Mock).not.toHaveBeenCalled();
   });
 });

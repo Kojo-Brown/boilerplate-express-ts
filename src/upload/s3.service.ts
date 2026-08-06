@@ -1,7 +1,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { randomUUID } from 'node:crypto';
 import { env } from '@/config/env';
+import { buildObjectKey } from '@/upload/object-key';
 
 let _s3: S3Client | null = null;
 
@@ -16,12 +16,6 @@ function getS3(): S3Client {
     });
   }
   return _s3;
-}
-
-function buildObjectKey(originalName: string): string {
-  const lastDot = originalName.lastIndexOf('.');
-  const ext = lastDot !== -1 ? originalName.slice(lastDot) : '';
-  return `uploads/${randomUUID()}${ext}`;
 }
 
 export function buildPublicUrl(key: string): string {

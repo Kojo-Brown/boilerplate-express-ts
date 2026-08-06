@@ -51,6 +51,9 @@ NODE_OPTIONS=--throw-deprecation pnpm test
 ## Design notes
 - [SOLID audit](./docs/solid.md) — the five principles applied to this codebase,
   with the before/after of each refactor they produced.
+- [Factory + Registry](./docs/provider-registry.md) — `ProviderRegistry`, the
+  compile-time exhaustiveness it buys, and the storage adapters behind
+  `STORAGE_DRIVER`.
 
 ## Spec Progress
 See [SPEC.md](./SPEC.md).
