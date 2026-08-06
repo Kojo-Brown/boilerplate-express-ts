@@ -41,7 +41,7 @@
 
 ## Phase 6 — SOLID & Design Patterns
 - [x] SOLID audit with before/after refactors documented in `docs/solid.md` — three of the five findings were live defects, not style: a duplicate email returned 500 because the error middleware was a closed `instanceof` ladder (and `upload.router.ts` had already grown a parallel Multer handler to work around that closure), `findByRole` cast an array through the base class's equality `WHERE` so the seeded admin never matched, and the controllers' hand-rolled 422 discarded Zod's `issues` while `validate.middleware.ts` sat unused (PR #23)
-- [ ] Factory + Registry: `ProviderRegistry` resolving adapters by key with compile-time exhaustiveness
+- [x] Factory + Registry: `ProviderRegistry` resolving adapters by key with compile-time exhaustiveness — `TKey` pinned to a union rather than inferred, so the table is checked both ways: a key with no factory fails the `Record`, a factory outside the union is an excess property, and both errors land at the registration site (PR #24)
 - [ ] Strategy pattern: swappable `AuthStrategy` (password, magic link, API key)
 - [ ] Decorator pattern: higher-order route handlers `withRetry`, `withTimeout`, `withCache`
 - [ ] Observer pattern: typed `EventBus` on Node `EventEmitter` with domain events
