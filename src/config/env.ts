@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { STORAGE_DRIVERS } from '@/upload/storage/storage.types';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -18,6 +19,10 @@ const envSchema = z.object({
   AWS_SECRET_ACCESS_KEY: z.string().default(''),
   S3_BUCKET: z.string().default(''),
   S3_PRESIGNED_EXPIRES_IN: z.coerce.number().int().positive().default(3600),
+  // Selects the adapter out of `storageRegistry`. Validated against the same
+  // const the registry is keyed by, so an unregistered driver is rejected at
+  // boot with the valid values listed, rather than on the first upload.
+  STORAGE_DRIVER: z.enum(STORAGE_DRIVERS).default('s3'),
 });
 
 const parsed = envSchema.safeParse(process.env);

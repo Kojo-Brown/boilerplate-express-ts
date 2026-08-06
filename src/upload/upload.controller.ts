@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
-import { generatePresignedPutUrl, uploadToS3 } from '@/upload/s3.service';
+import { getStorageProvider } from '@/upload/storage';
 import { AppError } from '@/lib/errors';
 import { sendOk, sendCreated } from '@/lib/response';
 import type { PresignBody, PresignData, UploadData } from '@/upload/upload.types';
@@ -12,7 +12,10 @@ export const uploadController = {
   ): Promise<void> {
     try {
       const { fileName, contentType } = req.body;
-      const result = await generatePresignedPutUrl(fileName, contentType);
+      // Resolved per request, not captured at module load: the registry
+      // memoises, and binding the adapter here keeps the controller unaware of
+      // which backend is configured.
+      const result = await getStorageProvider().presignPut(fileName, contentType);
 
       const data: PresignData = {
         presignedUrl: result.presignedUrl,
@@ -34,7 +37,7 @@ export const uploadController = {
       }
 
       const { buffer, mimetype, originalname, size } = req.file;
-      const result = await uploadToS3(buffer, originalname, mimetype);
+      const result = await getStorageProvider().put(buffer, originalname, mimetype);
 
       const data: UploadData = {
         key: result.key,
