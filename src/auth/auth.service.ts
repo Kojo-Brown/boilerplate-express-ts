@@ -1,22 +1,28 @@
-import { AppError } from '@/lib/errors';
 import { createTokenPair, verifyRefreshToken } from '@/lib/jwt';
-import { verifyPassword } from '@/lib/password';
+import { AppError } from '@/lib/errors';
 import { tokenStore } from '@/auth/token-store';
-import { inMemoryUserDirectory } from '@/auth/in-memory-user-directory';
+import { authStrategyRegistry } from '@/auth/strategies';
+import type { AuthStrategyRegistry } from '@/auth/strategies';
+import type { AuthStrategyName, AuthenticatedPrincipal } from '@/auth/strategies';
 import type {
   LoginRequest,
   LoginResponse,
   RefreshResponse,
   RefreshTokenStore,
-  UserDirectory,
 } from '@/auth/auth.types';
 
 export interface AuthServiceDeps {
-  users: UserDirectory;
+  strategies: AuthStrategyRegistry;
   tokens: RefreshTokenStore;
 }
 
 export interface AuthService {
+  /**
+   * Proves who the caller is with the named strategy, then issues them a
+   * session. `credentials` is `unknown` because its shape is the strategy's
+   * business — see `AuthStrategy` for why the type is erased here.
+   */
+  authenticate(strategy: AuthStrategyName, credentials: unknown): Promise<LoginResponse>;
   login(req: LoginRequest): Promise<LoginResponse>;
   refresh(refreshToken: string): Promise<RefreshResponse>;
   logout(refreshToken: string): Promise<void>;
@@ -24,30 +30,53 @@ export interface AuthService {
 }
 
 /**
- * The auth service depends on the `UserDirectory` and `RefreshTokenStore`
- * abstractions, never on the in-memory implementations of them. Swapping either
- * for a DB-backed one is a change at the composition root, not here.
+ * The auth service depends on the `AuthStrategyRegistry` and
+ * `RefreshTokenStore` abstractions, never on concrete implementations of
+ * either. Swapping a strategy's backing store — or adding a strategy — is a
+ * change at the composition root, not here.
  *
- * `verifyPassword` and the JWT helpers stay as module imports on purpose: they
- * are pure functions over their arguments with no lifecycle, connection or
- * substitutable policy, so injecting them would buy indirection and nothing else.
+ * What the service still owns is everything that happens *after* a principal is
+ * established: minting the pair, recording the refresh token, rotation, and
+ * revocation. That is the whole reason the strategies are interchangeable —
+ * they all converge on `issueSession`, so nothing downstream of login branches
+ * on how the caller proved who they were.
+ *
+ * The JWT helpers stay as module imports on purpose: they are pure functions
+ * over their arguments with no lifecycle, connection or substitutable policy,
+ * so injecting them would buy indirection and nothing else.
  */
-export function createAuthService({ users, tokens }: AuthServiceDeps): AuthService {
+export function createAuthService({ strategies, tokens }: AuthServiceDeps): AuthService {
+  async function issueSession(principal: AuthenticatedPrincipal): Promise<LoginResponse> {
+    const pair = createTokenPair(principal.id, principal.roles);
+    await tokens.add(pair.refreshToken, principal.id);
+
+    return {
+      user: { id: principal.id, email: principal.email, roles: [...principal.roles] },
+      accessToken: pair.accessToken,
+      refreshToken: pair.refreshToken,
+    };
+  }
+
+  async function authenticate(
+    strategy: AuthStrategyName,
+    credentials: unknown,
+  ): Promise<LoginResponse> {
+    const principal = await strategies.resolve(strategy).authenticate(credentials);
+    return issueSession(principal);
+  }
+
   return {
-    async login(req: LoginRequest): Promise<LoginResponse> {
-      const user = await users.findByEmail(req.email);
-      if (!user || !(await verifyPassword(req.password, user.passwordHash))) {
-        throw new AppError(401, 'Invalid email or password', 'AUTH_INVALID_CREDENTIALS');
-      }
+    authenticate,
 
-      const pair = createTokenPair(user.id, user.roles);
-      await tokens.add(pair.refreshToken, user.id);
-
-      return {
-        user: { id: user.id, email: user.email, roles: [...user.roles] },
-        accessToken: pair.accessToken,
-        refreshToken: pair.refreshToken,
-      };
+    /**
+     * Email-and-password login, kept as a named method because it is the one
+     * strategy with a dedicated route (`POST /v1/auth/login`) and a typed
+     * request body. It is a thin call into `authenticate` — the credentials
+     * still go through the password strategy's own schema, so there is exactly
+     * one place that decides what a valid password credential looks like.
+     */
+    login(req: LoginRequest): Promise<LoginResponse> {
+      return authenticate('password', req);
     },
 
     async refresh(refreshToken: string): Promise<RefreshResponse> {
@@ -89,6 +118,6 @@ export function createAuthService({ users, tokens }: AuthServiceDeps): AuthServi
 
 /** Composition root for the default wiring used by the HTTP layer. */
 export const authService: AuthService = createAuthService({
-  users: inMemoryUserDirectory,
+  strategies: authStrategyRegistry,
   tokens: tokenStore,
 });

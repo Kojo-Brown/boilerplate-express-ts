@@ -1,5 +1,9 @@
 import { authService, createAuthService } from '@/auth/auth.service';
 import { tokenStore } from '@/auth/token-store';
+import { createAuthStrategyRegistry } from '@/auth/strategies';
+import type { AuthStrategyRegistry } from '@/auth/strategies';
+import { createInMemoryApiKeyDirectory } from '@/auth/strategies/api-key.directory';
+import { createInMemoryMagicLinkStore } from '@/auth/strategies/magic-link.store';
 import type {
   AuthUser,
   InspectableRefreshTokenStore,
@@ -169,9 +173,21 @@ describe('createAuthService — injected collaborators', () => {
     },
   };
 
+  // The service reaches its users through the strategy registry now, so the
+  // seam this suite exercises is the registry. Building a real one over the
+  // fake directory — rather than stubbing the registry itself — keeps the
+  // password strategy's own credential parsing and 401 in the path under test.
+  function makeStrategies(users: UserDirectory): AuthStrategyRegistry {
+    return createAuthStrategyRegistry({
+      users,
+      links: createInMemoryMagicLinkStore({ ttlSeconds: 900 }),
+      keys: createInMemoryApiKeyDirectory(),
+    });
+  }
+
   it('logs in against an injected directory the singletons know nothing about', async () => {
     const tokens = makeFakeStore();
-    const service = createAuthService({ users: directory, tokens });
+    const service = createAuthService({ strategies: makeStrategies(directory), tokens });
 
     const result = await service.login({ email: 'injected@example.com', password: 'password' });
 
@@ -182,7 +198,7 @@ describe('createAuthService — injected collaborators', () => {
   it('writes the refresh token to the injected store, not the default one', async () => {
     const tokens = makeFakeStore();
     const before = tokenStore.size();
-    const service = createAuthService({ users: directory, tokens });
+    const service = createAuthService({ strategies: makeStrategies(directory), tokens });
 
     await service.login({ email: 'injected@example.com', password: 'password' });
 
@@ -192,7 +208,7 @@ describe('createAuthService — injected collaborators', () => {
   });
 
   it('rejects a user the injected directory does not know', async () => {
-    const service = createAuthService({ users: directory, tokens: makeFakeStore() });
+    const service = createAuthService({ strategies: makeStrategies(directory), tokens: makeFakeStore() });
 
     await expect(
       service.login({ email: 'admin@example.com', password: 'password' }),
@@ -201,7 +217,7 @@ describe('createAuthService — injected collaborators', () => {
 
   it('rotates through the injected store on refresh', async () => {
     const tokens = makeFakeStore();
-    const service = createAuthService({ users: directory, tokens });
+    const service = createAuthService({ strategies: makeStrategies(directory), tokens });
 
     const { refreshToken } = await service.login({
       email: 'injected@example.com',
@@ -221,7 +237,7 @@ describe('createAuthService — injected collaborators', () => {
       remove: () => Promise.resolve(),
       removeAllForUser: () => Promise.resolve(),
     };
-    const service = createAuthService({ users: directory, tokens: failing });
+    const service = createAuthService({ strategies: makeStrategies(directory), tokens: failing });
 
     await expect(
       service.login({ email: 'injected@example.com', password: 'password' }),

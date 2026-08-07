@@ -23,6 +23,11 @@ const envSchema = z.object({
   // const the registry is keyed by, so an unregistered driver is rejected at
   // boot with the valid values listed, rather than on the first upload.
   STORAGE_DRIVER: z.enum(STORAGE_DRIVERS).default('s3'),
+  // How long an issued magic link stays redeemable. Short by default: the link
+  // is a bearer credential sitting in an inbox, and 15 minutes is long enough
+  // for mail delivery plus a distracted user without leaving one live in an
+  // archive for a week.
+  MAGIC_LINK_TTL_SECONDS: z.coerce.number().int().positive().default(900),
 });
 
 const parsed = envSchema.safeParse(process.env);
