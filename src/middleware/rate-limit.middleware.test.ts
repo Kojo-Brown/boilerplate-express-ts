@@ -28,10 +28,19 @@ jest.mock('express-rate-limit', () => ({
 // Imports are hoisted after jest.mock
 import {
   loginRateLimiter,
+  magicLinkRateLimiter,
   oauthRateLimiter,
   refreshRateLimiter,
   resetRateLimiters,
 } from '@/middleware/rate-limit.middleware';
+
+/** Every limiter this module exports. Update when one is added or removed. */
+const EXPORTED_LIMITERS = [
+  loginRateLimiter,
+  magicLinkRateLimiter,
+  oauthRateLimiter,
+  refreshRateLimiter,
+];
 
 function mockRes(): Response {
   const res = {
@@ -111,14 +120,41 @@ describe('rate-limit.middleware', () => {
 
       await resetRateLimiters();
 
-      // one store per exported limiter: login, refresh, oauth
-      expect(mockResetAll).toHaveBeenCalledTimes(3);
+      // One store per exported limiter. Derived from EXPORTED_LIMITERS rather
+      // than hard-coded, so adding a limiter without wiring its store into
+      // resetRateLimiters fails here instead of leaking budget between suites.
+      expect(mockResetAll).toHaveBeenCalledTimes(EXPORTED_LIMITERS.length);
     });
 
     it('passes a store to each limiter so its counters can be cleared', () => {
-      for (const mw of [loginRateLimiter, refreshRateLimiter, oauthRateLimiter]) {
+      for (const mw of EXPORTED_LIMITERS) {
         expect(getOpts(mw).store).toBeDefined();
       }
+    });
+  });
+
+  describe('magicLinkRateLimiter', () => {
+    it('is the tightest of the limiters', () => {
+      // Every accepted request mails a third party, so this endpoint is
+      // stricter than login — the one place abuse costs someone else.
+      const magicLinkLimit = getOpts(magicLinkRateLimiter).limit;
+
+      for (const mw of EXPORTED_LIMITERS) {
+        expect(magicLinkLimit).toBeLessThanOrEqual(getOpts(mw).limit);
+      }
+    });
+
+    it('handler responds with 429 and the error envelope format', () => {
+      const { handler } = getOpts(magicLinkRateLimiter);
+      const res = mockRes();
+      const next = jest.fn() as unknown as NextFunction;
+
+      handler({} as Request, res, next);
+
+      expect(res.status).toHaveBeenCalledWith(429);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.objectContaining({ code: 'TOO_MANY_REQUESTS' }) }),
+      );
     });
   });
 

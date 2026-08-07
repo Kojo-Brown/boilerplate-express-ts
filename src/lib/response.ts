@@ -24,6 +24,15 @@ export function created<T>(data: T, meta?: ApiMeta): ApiResponse<T> {
   return { data, meta: meta ?? null, error: null };
 }
 
+/**
+ * "Taken, outcome not observable from here." Distinct from `ok` so a caller
+ * cannot read a 202 as confirmation that the work succeeded — the magic-link
+ * endpoint answers this way whether or not the address exists.
+ */
+export function accepted<T>(data: T, meta?: ApiMeta): ApiResponse<T> {
+  return { data, meta: meta ?? null, error: null };
+}
+
 export function fail(code: string, message: string, issues?: unknown[]): ApiResponse<null> {
   const error: ApiError = { code, message };
   if (issues !== undefined) error.issues = issues;
@@ -36,6 +45,10 @@ export function sendOk<T>(res: Response, data: T, meta?: ApiMeta): void {
 
 export function sendCreated<T>(res: Response, data: T, meta?: ApiMeta): void {
   res.status(201).json(created(data, meta));
+}
+
+export function sendAccepted<T>(res: Response, data: T, meta?: ApiMeta): void {
+  res.status(202).json(accepted(data, meta));
 }
 
 export function sendNoContent(res: Response): void {

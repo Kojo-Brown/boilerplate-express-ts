@@ -43,6 +43,16 @@ export const refreshRateLimiter = createRateLimiter(
   'Too many token refresh requests. Please try again in 15 minutes.',
 );
 
+// 3 links per 15 minutes — every accepted request sends mail to an address the
+// caller chose, so an unthrottled endpoint is a spam cannon pointed at third
+// parties. Lower than the login ceiling because a real user needs one link, not
+// five guesses.
+export const magicLinkRateLimiter = createRateLimiter(
+  15 * 60 * 1000,
+  3,
+  'Too many magic link requests. Please try again in 15 minutes.',
+);
+
 // 10 initiations per 15 minutes — throttles OAuth flow abuse without blocking real users
 export const oauthRateLimiter = createRateLimiter(
   15 * 60 * 1000,

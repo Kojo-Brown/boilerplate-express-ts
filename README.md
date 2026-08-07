@@ -54,6 +54,36 @@ NODE_OPTIONS=--throw-deprecation pnpm test
 - [Factory + Registry](./docs/provider-registry.md) — `ProviderRegistry`, the
   compile-time exhaustiveness it buys, and the storage adapters behind
   `STORAGE_DRIVER`.
+- [Auth strategies](./docs/auth-strategies.md) — swappable `AuthStrategy`
+  (password, magic link, API key), why the credential type is erased at the
+  registry, and how secrets are stored.
+
+## Authentication
+
+Three ways in, one session out. Every strategy resolves an
+`AuthenticatedPrincipal` and `AuthService` mints the same token pair from it,
+so nothing downstream of login branches on how the caller authenticated.
+
+```bash
+# password
+curl -X POST localhost:4000/v1/auth/login/password \
+  -H 'content-type: application/json' \
+  -d '{"email":"admin@example.com","password":"…"}'
+
+# magic link — request, then redeem the token that lands in the dev log
+curl -X POST localhost:4000/v1/auth/magic-link \
+  -H 'content-type: application/json' -d '{"email":"admin@example.com"}'
+curl -X POST localhost:4000/v1/auth/login/magic-link \
+  -H 'content-type: application/json' -d '{"token":"…"}'
+
+# api key — mock-api-key-admin / mock-api-key-user are seeded outside production
+curl -X POST localhost:4000/v1/auth/login/api-key \
+  -H 'content-type: application/json' -d '{"apiKey":"mock-api-key-admin"}'
+```
+
+Adding a fourth is a name in `AUTH_STRATEGIES` plus a factory in
+`src/auth/strategies/index.ts`; the build fails at the registration site until
+both exist. No router, controller or service change.
 
 ## Spec Progress
 See [SPEC.md](./SPEC.md).

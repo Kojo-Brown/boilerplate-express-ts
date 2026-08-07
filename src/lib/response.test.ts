@@ -1,4 +1,14 @@
-import { ok, created, fail, sendOk, sendCreated, sendNoContent, sendFail } from '@/lib/response';
+import {
+  accepted,
+  ok,
+  created,
+  fail,
+  sendOk,
+  sendAccepted,
+  sendCreated,
+  sendNoContent,
+  sendFail,
+} from '@/lib/response';
 import type { ApiResponse } from '@/lib/response';
 
 function makeRes() {
@@ -42,6 +52,17 @@ describe('response envelope factories', () => {
     it('sets data and nulls meta/error', () => {
       const result = created({ id: 'abc' });
       expect(result).toEqual({ data: { id: 'abc' }, meta: null, error: null });
+    });
+  });
+
+  describe('accepted()', () => {
+    it('sets data and nulls meta/error', () => {
+      const result: ApiResponse<{ status: string }> = accepted({ status: 'sent' });
+      expect(result).toEqual({ data: { status: 'sent' }, meta: null, error: null });
+    });
+
+    it('includes meta when provided', () => {
+      expect(accepted('value', { queued: true }).meta).toEqual({ queued: true });
     });
   });
 
@@ -90,6 +111,15 @@ describe('response envelope senders', () => {
       sendCreated(res as never, { id: '1' });
       expect(res._body.statusCode).toBe(201);
       expect((res._body.json as ApiResponse).data).toEqual({ id: '1' });
+    });
+  });
+
+  describe('sendAccepted()', () => {
+    it('responds 202 with the envelope', () => {
+      const res = makeRes();
+      sendAccepted(res as never, { status: 'sent' });
+      expect(res._body.statusCode).toBe(202);
+      expect(res._body.json).toEqual({ data: { status: 'sent' }, meta: null, error: null });
     });
   });
 
