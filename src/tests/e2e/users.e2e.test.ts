@@ -2,6 +2,7 @@ import request from 'supertest';
 import { DatabaseError } from 'pg';
 import { createApp } from '@/app';
 import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
+import { usersCache } from '@/users/users.controller';
 import type { UserRow } from '@/users/users.repository';
 
 // env vars are set in jest.setup.ts
@@ -63,6 +64,9 @@ beforeEach(async () => {
   // Every case logs in to get a token, and the login limiter allows only five
   // attempts per window per IP — without a reset the suite throttles itself.
   await resetRateLimiters();
+  // Reads are cached for 5s, so without this a case would assert against the
+  // row the *previous* case seeded.
+  await usersCache.clear();
 });
 
 describe('GET /v1/users (admin only)', () => {
@@ -345,5 +349,104 @@ describe('error translation reaches the wire', () => {
     expect(res.body.error.issues).toEqual(
       expect.arrayContaining([expect.objectContaining({ path: ['email'] })]),
     );
+  });
+});
+
+describe('read caching on the users routes', () => {
+  it('serves a repeated read from cache instead of re-querying', async () => {
+    mockQuery.mockResolvedValue(SEED_USERS);
+    const token = await getAdminToken();
+
+    const first = await request(app).get('/v1/users').set('Authorization', `Bearer ${token}`);
+    const second = await request(app).get('/v1/users').set('Authorization', `Bearer ${token}`);
+
+    expect(first.body.meta).toEqual({ cache: 'miss' });
+    expect(second.body.meta).toEqual({ cache: 'hit' });
+    expect(second.body.data).toHaveLength(2);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not serve one principal the list computed for another', async () => {
+    mockQueryOne.mockResolvedValue(SEED_USERS[0]!);
+    const adminToken = await getAdminToken();
+    const userToken = await getUserToken();
+
+    await request(app).get('/v1/users/user-uuid-1').set('Authorization', `Bearer ${adminToken}`);
+    const other = await request(app)
+      .get('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${userToken}`);
+
+    // Same URL, different caller: a key that ignored the principal would hand
+    // the second caller an answer that was authorised for the first.
+    expect(other.body.meta).toEqual({ cache: 'miss' });
+    expect(mockQueryOne).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps separate entries per resource id', async () => {
+    mockQueryOne.mockResolvedValue(SEED_USERS[0]!);
+    const token = await getUserToken();
+
+    await request(app).get('/v1/users/user-uuid-1').set('Authorization', `Bearer ${token}`);
+    const second = await request(app)
+      .get('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(second.body.meta).toEqual({ cache: 'miss' });
+    expect(mockQueryOne).toHaveBeenCalledTimes(2);
+  });
+
+  it('a write invalidates the cached read rather than leaving it stale', async () => {
+    mockQuery.mockResolvedValue(SEED_USERS);
+    mockQueryOne.mockResolvedValue({
+      id: 'user-uuid-3',
+      email: 'charlie@example.com',
+      password_hash: null,
+      roles: ['user'],
+      created_at: new Date('2024-03-01T00:00:00Z'),
+      updated_at: new Date('2024-03-01T00:00:00Z'),
+    });
+    const token = await getAdminToken();
+
+    await request(app).get('/v1/users').set('Authorization', `Bearer ${token}`);
+    await request(app)
+      .post('/v1/users')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'charlie@example.com', roles: ['user'] });
+
+    const afterWrite = await request(app).get('/v1/users').set('Authorization', `Bearer ${token}`);
+
+    expect(afterWrite.body.meta).toEqual({ cache: 'miss' });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache a 404, so the row appears as soon as it exists', async () => {
+    mockQueryOne.mockResolvedValueOnce(null).mockResolvedValue(SEED_USERS[0]!);
+    const token = await getUserToken();
+
+    const missing = await request(app)
+      .get('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`);
+    const found = await request(app)
+      .get('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(missing.status).toBe(404);
+    expect(found.status).toBe(200);
+  });
+
+  it('does not cache a write response under the read key', async () => {
+    mockQueryOne.mockResolvedValue(SEED_USERS[1]!);
+    mockQuery.mockResolvedValue(SEED_USERS);
+    const token = await getAdminToken();
+
+    const write = await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'bob-updated@example.com' });
+
+    expect(write.body.meta).toBeNull();
+
+    const read = await request(app).get('/v1/users').set('Authorization', `Bearer ${token}`);
+    expect(read.body.meta).toEqual({ cache: 'miss' });
   });
 });
