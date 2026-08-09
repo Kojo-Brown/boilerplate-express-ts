@@ -60,6 +60,9 @@ NODE_OPTIONS=--throw-deprecation pnpm test
 - [Route decorators](./docs/route-decorators.md) — `withRetry`, `withTimeout`
   and `withCache`, why they wrap a request-to-value operation rather than an
   Express handler, and what each one refuses to do.
+- [Domain events](./docs/event-bus.md) — the typed `EventBus` over
+  `EventEmitter`, why a raw emitter cannot isolate a failing subscriber, and
+  which consequences are deliberately *not* events.
 
 ## Authentication
 

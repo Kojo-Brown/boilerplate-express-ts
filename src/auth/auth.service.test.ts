@@ -10,6 +10,8 @@ import type {
   RefreshTokenStore,
   UserDirectory,
 } from '@/auth/auth.types';
+import type { DomainEventBus, DomainEventPayloads } from '@/events';
+import { createEventBus, domainEventBus } from '@/events';
 
 // env vars injected via jest.setup.ts before any module is loaded
 
@@ -160,6 +162,30 @@ describe('createAuthService — injected collaborators', () => {
     };
   }
 
+  /**
+   * A real bus with recording subscribers rather than a stubbed one: the
+   * assertions below are about what the service publishes, and a hand-written
+   * fake would let a payload that no subscriber could actually consume pass.
+   */
+  function makeRecordingBus(): {
+    bus: DomainEventBus;
+    logins: DomainEventPayloads['auth.login.succeeded'][];
+    revocations: DomainEventPayloads['auth.session.revoked'][];
+  } {
+    const bus = createEventBus<DomainEventPayloads>();
+    const logins: DomainEventPayloads['auth.login.succeeded'][] = [];
+    const revocations: DomainEventPayloads['auth.session.revoked'][] = [];
+
+    bus.on('auth.login.succeeded', (event) => {
+      logins.push(event.payload);
+    });
+    bus.on('auth.session.revoked', (event) => {
+      revocations.push(event.payload);
+    });
+
+    return { bus, logins, revocations };
+  }
+
   const fakeUser: AuthUser = {
     id: 'fake-user-1',
     email: 'injected@example.com',
@@ -187,7 +213,11 @@ describe('createAuthService — injected collaborators', () => {
 
   it('logs in against an injected directory the singletons know nothing about', async () => {
     const tokens = makeFakeStore();
-    const service = createAuthService({ strategies: makeStrategies(directory), tokens });
+    const service = createAuthService({
+      strategies: makeStrategies(directory),
+      tokens,
+      events: domainEventBus,
+    });
 
     const result = await service.login({ email: 'injected@example.com', password: 'password' });
 
@@ -198,7 +228,11 @@ describe('createAuthService — injected collaborators', () => {
   it('writes the refresh token to the injected store, not the default one', async () => {
     const tokens = makeFakeStore();
     const before = tokenStore.size();
-    const service = createAuthService({ strategies: makeStrategies(directory), tokens });
+    const service = createAuthService({
+      strategies: makeStrategies(directory),
+      tokens,
+      events: domainEventBus,
+    });
 
     await service.login({ email: 'injected@example.com', password: 'password' });
 
@@ -208,7 +242,11 @@ describe('createAuthService — injected collaborators', () => {
   });
 
   it('rejects a user the injected directory does not know', async () => {
-    const service = createAuthService({ strategies: makeStrategies(directory), tokens: makeFakeStore() });
+    const service = createAuthService({
+      strategies: makeStrategies(directory),
+      tokens: makeFakeStore(),
+      events: domainEventBus,
+    });
 
     await expect(
       service.login({ email: 'admin@example.com', password: 'password' }),
@@ -217,7 +255,11 @@ describe('createAuthService — injected collaborators', () => {
 
   it('rotates through the injected store on refresh', async () => {
     const tokens = makeFakeStore();
-    const service = createAuthService({ strategies: makeStrategies(directory), tokens });
+    const service = createAuthService({
+      strategies: makeStrategies(directory),
+      tokens,
+      events: domainEventBus,
+    });
 
     const { refreshToken } = await service.login({
       email: 'injected@example.com',
@@ -237,10 +279,145 @@ describe('createAuthService — injected collaborators', () => {
       remove: () => Promise.resolve(),
       removeAllForUser: () => Promise.resolve(),
     };
-    const service = createAuthService({ strategies: makeStrategies(directory), tokens: failing });
+    const service = createAuthService({
+      strategies: makeStrategies(directory),
+      tokens: failing,
+      events: domainEventBus,
+    });
 
     await expect(
       service.login({ email: 'injected@example.com', password: 'password' }),
     ).rejects.toThrow('store unavailable');
+  });
+
+  describe('domain events', () => {
+    it('publishes auth.login.succeeded naming the strategy that authenticated', async () => {
+      const { bus, logins } = makeRecordingBus();
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      await service.login({ email: 'injected@example.com', password: 'password' });
+
+      expect(logins).toEqual([{ userId: 'fake-user-1', strategy: 'password' }]);
+    });
+
+    it('never puts a token in a login payload', async () => {
+      const { bus, logins } = makeRecordingBus();
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      const result = await service.login({
+        email: 'injected@example.com',
+        password: 'password',
+      });
+
+      const serialised = JSON.stringify(logins);
+      expect(serialised).not.toContain(result.accessToken);
+      expect(serialised).not.toContain(result.refreshToken);
+    });
+
+    it('publishes nothing when authentication fails', async () => {
+      const { bus, logins } = makeRecordingBus();
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      await expect(
+        service.login({ email: 'injected@example.com', password: 'wrong' }),
+      ).rejects.toMatchObject({ statusCode: 401 });
+
+      expect(logins).toEqual([]);
+    });
+
+    it('publishes a single-scope revocation on logout', async () => {
+      const { bus, revocations } = makeRecordingBus();
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      const { refreshToken } = await service.login({
+        email: 'injected@example.com',
+        password: 'password',
+      });
+      await service.logout(refreshToken);
+
+      expect(revocations).toEqual([{ userId: 'fake-user-1', scope: 'single' }]);
+    });
+
+    it('publishes nothing when logout is handed a token it cannot verify', async () => {
+      const { bus, revocations } = makeRecordingBus();
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      await service.logout('not-a-token');
+
+      expect(revocations).toEqual([]);
+    });
+
+    it('publishes an all-scope revocation on logoutAll', async () => {
+      const { bus, revocations } = makeRecordingBus();
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      await service.logoutAll('fake-user-1');
+
+      expect(revocations).toEqual([{ userId: 'fake-user-1', scope: 'all' }]);
+    });
+
+    it('does not publish on refresh — rotation is not a new session', async () => {
+      const { bus, logins, revocations } = makeRecordingBus();
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      const { refreshToken } = await service.login({
+        email: 'injected@example.com',
+        password: 'password',
+      });
+      await service.refresh(refreshToken);
+
+      expect(logins).toHaveLength(1);
+      expect(revocations).toEqual([]);
+    });
+
+    it('completes the login even when a subscriber throws', async () => {
+      const onHandlerError = jest.fn();
+      const bus = createEventBus<DomainEventPayloads>({ onHandlerError });
+      bus.on('auth.login.succeeded', () => {
+        throw new Error('audit sink unavailable');
+      });
+
+      const service = createAuthService({
+        strategies: makeStrategies(directory),
+        tokens: makeFakeStore(),
+        events: bus,
+      });
+
+      const result = await service.login({
+        email: 'injected@example.com',
+        password: 'password',
+      });
+
+      expect(result.user.id).toBe('fake-user-1');
+      expect(onHandlerError).toHaveBeenCalledTimes(1);
+    });
   });
 });

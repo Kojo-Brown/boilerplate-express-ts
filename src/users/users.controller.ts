@@ -8,6 +8,8 @@ import {
   withRetry,
   withTimeout,
 } from '@/lib/route-decorators';
+import { domainEventBus } from '@/events';
+import { correlationIdOf } from '@/middleware/logger.middleware';
 import type { UserRow } from '@/users/users.repository';
 import { userRepository } from '@/users/users.repository';
 import type { CreateUserBody, UpdateUserBody, UserIdParams } from '@/users/users.schemas';
@@ -59,10 +61,31 @@ const getUser: RouteOperation<UserRow, Request<UserIdParams>> = async (req) => {
   return user;
 };
 
+/**
+ * Cache invalidation stays here, inline, and is deliberately *not* a subscriber.
+ *
+ * The bus isolates handler failures by design, so an invalidation that failed
+ * as a subscriber would be logged and the write would still answer 200 — with
+ * this replica serving the row it just changed for the rest of the TTL. That is
+ * a correctness consequence of the write, so it belongs on the write's own
+ * error path. Events carry the consequences the publisher can afford to lose.
+ */
 const createUser: RouteOperation<UserRow, Request<Record<string, string>, unknown, CreateUserBody>> =
   async (req) => {
     const user = await userRepository.create(req.body);
     await usersCache.clear();
+
+    await domainEventBus.publish(
+      'user.created',
+      {
+        userId: user.id,
+        email: user.email,
+        roles: user.roles,
+        actorId: req.auth?.userId ?? null,
+      },
+      { correlationId: correlationIdOf(req) },
+    );
+
     return user;
   };
 
@@ -72,6 +95,21 @@ const updateUser: RouteOperation<UserRow, Request<UserIdParams, unknown, UpdateU
   const user = await userRepository.update(req.params.id, req.body);
   if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
   await usersCache.clear();
+
+  await domainEventBus.publish(
+    'user.updated',
+    {
+      userId: user.id,
+      // The request's keys, not a diff against the previous row: this says what
+      // the caller asked to change, which is the question an audit trail is
+      // actually asked. A field set to the value it already held still
+      // represents someone reaching for it.
+      changedFields: Object.keys(req.body),
+      actorId: req.auth?.userId ?? null,
+    },
+    { correlationId: correlationIdOf(req) },
+  );
+
   return user;
 };
 
@@ -79,6 +117,16 @@ const removeUser: RouteOperation<void, Request<UserIdParams>> = async (req) => {
   const deleted = await userRepository.delete(req.params.id);
   if (!deleted) throw new AppError(404, 'User not found', 'NOT_FOUND');
   await usersCache.clear();
+
+  // Awaited rather than fired and forgotten. `publish` cannot reject, so this
+  // costs nothing but ordering — and the ordering matters: the 204 should not
+  // be on the wire before the subscriber that revokes the deleted user's
+  // refresh tokens has had its turn.
+  await domainEventBus.publish(
+    'user.deleted',
+    { userId: req.params.id, actorId: req.auth?.userId ?? null },
+    { correlationId: correlationIdOf(req) },
+  );
 };
 
 /**

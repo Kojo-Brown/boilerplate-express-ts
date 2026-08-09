@@ -8,6 +8,8 @@ import { registerGoogleStrategy } from '@/auth/oauth/google.strategy';
 import { registerErrorTranslator } from '@/lib/error-translators';
 import { postgresErrorTranslator } from '@/db/db.errors';
 import { multerErrorTranslator } from '@/upload/upload.errors';
+import { domainEventBus } from '@/events';
+import { registerDomainSubscribers } from '@/events/subscribers';
 import { env } from '@/config/env';
 import { sendFail } from '@/lib/response';
 
@@ -17,6 +19,12 @@ registerGoogleStrategy();
 // The error middleware never learns about Postgres or Multer.
 registerErrorTranslator(postgresErrorTranslator);
 registerErrorTranslator(multerErrorTranslator);
+
+// Same idea one layer up: the publishers do not know who is listening, and this
+// is the only file that knows the full subscriber list. Attaching here rather
+// than in each subscriber's own module is what makes a deployment able to leave
+// one out — a module that subscribed on import could not be.
+registerDomainSubscribers(domainEventBus);
 
 export function createApp(): express.Application {
   const app = express();

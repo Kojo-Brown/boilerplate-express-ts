@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { DatabaseError } from 'pg';
 import { createApp } from '@/app';
+import { tokenStore } from '@/auth/token-store';
 import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
 import { usersCache } from '@/users/users.controller';
 import type { UserRow } from '@/users/users.repository';
@@ -291,6 +292,62 @@ describe('DELETE /v1/users/:id (admin only)', () => {
     const res = await request(app).delete('/v1/users/user-uuid-2');
 
     expect(res.status).toBe(401);
+  });
+});
+
+describe('domain events reach their subscribers through the app', () => {
+  // Unit tests cover the bus and each subscriber; these two go through the real
+  // wiring in `app.ts`, which is the part no unit test can vouch for — a
+  // subscriber that was written but never registered passes every one of them.
+
+  it('revokes a deleted user’s refresh tokens', async () => {
+    // `/v1/users/:id` and the auth directory are separate stores in this
+    // boilerplate, so the id here is the one the login actually issued for.
+    const login = await request(app)
+      .post('/v1/auth/login')
+      .send({ email: 'user@example.com', password: 'password' });
+    const refreshToken = (login.body.data as { refreshToken: string }).refreshToken;
+    await expect(tokenStore.has(refreshToken)).resolves.toBe(true);
+
+    mockQueryOne.mockResolvedValue({ id: '2' });
+    const token = await getAdminToken();
+
+    const res = await request(app).delete('/v1/users/2').set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+    // Without the subscriber this token stays valid for JWT_REFRESH_EXPIRES_IN
+    // after the account is gone.
+    await expect(tokenStore.has(refreshToken)).resolves.toBe(false);
+  });
+
+  it('writes an audit line carrying the deleting request’s correlation id', async () => {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      mockQueryOne.mockResolvedValue({ id: 'user-uuid-2' });
+      const token = await getAdminToken();
+
+      await request(app)
+        .delete('/v1/users/user-uuid-2')
+        .set('Authorization', `Bearer ${token}`)
+        .set('x-correlation-id', 'e2e-correlation-id');
+
+      const audited = log.mock.calls
+        .map(([line]) => line)
+        .filter((line): line is string => typeof line === 'string' && line.includes('"audit"'))
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((entry) => entry['eventName'] === 'user.deleted');
+
+      expect(audited).toHaveLength(1);
+      expect(audited[0]).toMatchObject({
+        subject: 'user-uuid-2',
+        // The admin's own id from the bearer token, so the line says who did it.
+        actorId: '1',
+        correlationId: 'e2e-correlation-id',
+      });
+    } finally {
+      log.mockRestore();
+    }
   });
 });
 
