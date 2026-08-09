@@ -57,6 +57,9 @@ NODE_OPTIONS=--throw-deprecation pnpm test
 - [Auth strategies](./docs/auth-strategies.md) — swappable `AuthStrategy`
   (password, magic link, API key), why the credential type is erased at the
   registry, and how secrets are stored.
+- [Route decorators](./docs/route-decorators.md) — `withRetry`, `withTimeout`
+  and `withCache`, why they wrap a request-to-value operation rather than an
+  Express handler, and what each one refuses to do.
 
 ## Authentication
 
