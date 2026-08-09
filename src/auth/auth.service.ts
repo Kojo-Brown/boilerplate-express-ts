@@ -4,6 +4,8 @@ import { tokenStore } from '@/auth/token-store';
 import { authStrategyRegistry } from '@/auth/strategies';
 import type { AuthStrategyRegistry } from '@/auth/strategies';
 import type { AuthStrategyName, AuthenticatedPrincipal } from '@/auth/strategies';
+import type { DomainEventBus } from '@/events';
+import { domainEventBus } from '@/events';
 import type {
   LoginRequest,
   LoginResponse,
@@ -14,6 +16,11 @@ import type {
 export interface AuthServiceDeps {
   strategies: AuthStrategyRegistry;
   tokens: RefreshTokenStore;
+  /**
+   * Where session facts are announced. Injected rather than imported so a test
+   * can assert on what was published without reaching for the process-wide bus.
+   */
+  events: DomainEventBus;
 }
 
 export interface AuthService {
@@ -45,10 +52,21 @@ export interface AuthService {
  * over their arguments with no lifecycle, connection or substitutable policy,
  * so injecting them would buy indirection and nothing else.
  */
-export function createAuthService({ strategies, tokens }: AuthServiceDeps): AuthService {
-  async function issueSession(principal: AuthenticatedPrincipal): Promise<LoginResponse> {
+export function createAuthService({ strategies, tokens, events }: AuthServiceDeps): AuthService {
+  async function issueSession(
+    principal: AuthenticatedPrincipal,
+    strategy: AuthStrategyName,
+  ): Promise<LoginResponse> {
     const pair = createTokenPair(principal.id, principal.roles);
     await tokens.add(pair.refreshToken, principal.id);
+
+    // After the token is recorded, so a subscriber never observes a login for a
+    // session that does not exist yet. The tokens themselves stay out of the
+    // payload — subscribers persist what they are given.
+    await events.publish('auth.login.succeeded', {
+      userId: principal.id,
+      strategy,
+    });
 
     return {
       user: { id: principal.id, email: principal.email, roles: [...principal.roles] },
@@ -62,7 +80,7 @@ export function createAuthService({ strategies, tokens }: AuthServiceDeps): Auth
     credentials: unknown,
   ): Promise<LoginResponse> {
     const principal = await strategies.resolve(strategy).authenticate(credentials);
-    return issueSession(principal);
+    return issueSession(principal, strategy);
   }
 
   return {
@@ -79,6 +97,14 @@ export function createAuthService({ strategies, tokens }: AuthServiceDeps): Auth
       return authenticate('password', req);
     },
 
+    /**
+     * Rotation publishes nothing on purpose. A refresh happens every few
+     * minutes per active session, so an event here would be the highest-volume
+     * thing on the bus while carrying the least: it says a session that already
+     * announced itself is still going. The signal worth having from this path
+     * is a *reused* refresh token, and that is the Phase 10 reuse-detection
+     * item — a different event with a different meaning.
+     */
     async refresh(refreshToken: string): Promise<RefreshResponse> {
       const payload = verifyRefreshToken(refreshToken);
 
@@ -104,6 +130,12 @@ export function createAuthService({ strategies, tokens }: AuthServiceDeps): Auth
         const payload = verifyRefreshToken(refreshToken);
         if (payload.type === 'refresh') {
           await tokens.remove(refreshToken);
+          // Inside the `if`, so the event means a session was actually retired
+          // rather than that someone posted a string to `/logout`.
+          await events.publish('auth.session.revoked', {
+            userId: payload.userId,
+            scope: 'single',
+          });
         }
       } catch {
         // no-op
@@ -112,6 +144,7 @@ export function createAuthService({ strategies, tokens }: AuthServiceDeps): Auth
 
     async logoutAll(userId: string): Promise<void> {
       await tokens.removeAllForUser(userId);
+      await events.publish('auth.session.revoked', { userId, scope: 'all' });
     },
   };
 }
@@ -120,4 +153,5 @@ export function createAuthService({ strategies, tokens }: AuthServiceDeps): Auth
 export const authService: AuthService = createAuthService({
   strategies: authStrategyRegistry,
   tokens: tokenStore,
+  events: domainEventBus,
 });
