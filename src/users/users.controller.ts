@@ -8,10 +8,9 @@ import {
   withRetry,
   withTimeout,
 } from '@/lib/route-decorators';
-import { domainEventBus } from '@/events';
-import { correlationIdOf } from '@/middleware/logger.middleware';
+import { EVENT_BUS, REQUEST_CONTEXT, USER_REPOSITORY } from '@/container/tokens';
+import { scopeOf } from '@/middleware/container.middleware';
 import type { UserRow } from '@/users/users.repository';
-import { userRepository } from '@/users/users.repository';
 import type { CreateUserBody, UpdateUserBody, UserIdParams } from '@/users/users.schemas';
 
 /** A query that has not answered in two seconds is holding a pooled connection
@@ -52,11 +51,18 @@ function cachedRead<TResult, TReq extends Request>(
   );
 }
 
-const listUsers: RouteOperation<UserRow[]> = async () =>
-  userRepository.findAll({ orderBy: 'created_at', order: 'ASC' });
+/**
+ * Collaborators come out of the request scope rather than a module import.
+ *
+ * The repository is a container singleton, so this is the same object every
+ * time; the point is that its lifetime is declared in one file instead of being
+ * whatever `new UserRepository()` at module scope happened to mean.
+ */
+const listUsers: RouteOperation<UserRow[]> = async (req) =>
+  scopeOf(req).resolve(USER_REPOSITORY).findAll({ orderBy: 'created_at', order: 'ASC' });
 
 const getUser: RouteOperation<UserRow, Request<UserIdParams>> = async (req) => {
-  const user = await userRepository.findById(req.params.id);
+  const user = await scopeOf(req).resolve(USER_REPOSITORY).findById(req.params.id);
   if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
   return user;
 };
@@ -72,18 +78,21 @@ const getUser: RouteOperation<UserRow, Request<UserIdParams>> = async (req) => {
  */
 const createUser: RouteOperation<UserRow, Request<Record<string, string>, unknown, CreateUserBody>> =
   async (req) => {
-    const user = await userRepository.create(req.body);
+    const scope = scopeOf(req);
+    const context = scope.resolve(REQUEST_CONTEXT);
+
+    const user = await scope.resolve(USER_REPOSITORY).create(req.body);
     await usersCache.clear();
 
-    await domainEventBus.publish(
+    await scope.resolve(EVENT_BUS).publish(
       'user.created',
       {
         userId: user.id,
         email: user.email,
         roles: user.roles,
-        actorId: req.auth?.userId ?? null,
+        actorId: context.actorId,
       },
-      { correlationId: correlationIdOf(req) },
+      { correlationId: context.correlationId },
     );
 
     return user;
@@ -92,11 +101,14 @@ const createUser: RouteOperation<UserRow, Request<Record<string, string>, unknow
 const updateUser: RouteOperation<UserRow, Request<UserIdParams, unknown, UpdateUserBody>> = async (
   req,
 ) => {
-  const user = await userRepository.update(req.params.id, req.body);
+  const scope = scopeOf(req);
+  const context = scope.resolve(REQUEST_CONTEXT);
+
+  const user = await scope.resolve(USER_REPOSITORY).update(req.params.id, req.body);
   if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
   await usersCache.clear();
 
-  await domainEventBus.publish(
+  await scope.resolve(EVENT_BUS).publish(
     'user.updated',
     {
       userId: user.id,
@@ -105,16 +117,19 @@ const updateUser: RouteOperation<UserRow, Request<UserIdParams, unknown, UpdateU
       // actually asked. A field set to the value it already held still
       // represents someone reaching for it.
       changedFields: Object.keys(req.body),
-      actorId: req.auth?.userId ?? null,
+      actorId: context.actorId,
     },
-    { correlationId: correlationIdOf(req) },
+    { correlationId: context.correlationId },
   );
 
   return user;
 };
 
 const removeUser: RouteOperation<void, Request<UserIdParams>> = async (req) => {
-  const deleted = await userRepository.delete(req.params.id);
+  const scope = scopeOf(req);
+  const context = scope.resolve(REQUEST_CONTEXT);
+
+  const deleted = await scope.resolve(USER_REPOSITORY).delete(req.params.id);
   if (!deleted) throw new AppError(404, 'User not found', 'NOT_FOUND');
   await usersCache.clear();
 
@@ -122,10 +137,10 @@ const removeUser: RouteOperation<void, Request<UserIdParams>> = async (req) => {
   // costs nothing but ordering — and the ordering matters: the 204 should not
   // be on the wire before the subscriber that revokes the deleted user's
   // refresh tokens has had its turn.
-  await domainEventBus.publish(
+  await scope.resolve(EVENT_BUS).publish(
     'user.deleted',
-    { userId: req.params.id, actorId: req.auth?.userId ?? null },
-    { correlationId: correlationIdOf(req) },
+    { userId: req.params.id, actorId: context.actorId },
+    { correlationId: context.correlationId },
   );
 };
 

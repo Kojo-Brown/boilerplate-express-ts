@@ -2,6 +2,7 @@ import express from 'express';
 import session from 'express-session';
 import passport from 'passport';
 import { correlationIdMiddleware, requestLogger } from '@/middleware/logger.middleware';
+import { containerMiddleware } from '@/middleware/container.middleware';
 import { errorMiddleware } from '@/middleware/error.middleware';
 import { v1Router } from '@/routes/v1/index';
 import { registerGoogleStrategy } from '@/auth/oauth/google.strategy';
@@ -46,6 +47,9 @@ export function createApp(): express.Application {
   app.use(passport.initialize());
   app.use(correlationIdMiddleware);
   app.use(requestLogger);
+  // After the correlation id, so a scope can be named by the request it serves,
+  // and ahead of every router, so no handler has to ask whether it has a scope.
+  app.use(containerMiddleware);
 
   app.use('/v1', v1Router);
 

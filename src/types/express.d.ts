@@ -1,5 +1,6 @@
 import type { JwtPayload } from '@/auth/auth.types';
 import type { OAuthUser } from '@/auth/oauth/oauth.types';
+import type { Scope } from '@/lib/container';
 
 declare global {
   namespace Express {
@@ -13,6 +14,13 @@ declare global {
     // the same split express-jwt uses.
     interface Request {
       auth?: JwtPayload;
+
+      // Optional because the type has to describe a request that has not
+      // reached `containerMiddleware` yet — a middleware ahead of it in the
+      // chain, or a `Request` built in a test. Handlers read it through
+      // `scopeOf`, which turns the absence into one 500 instead of a null
+      // check per call site.
+      scope?: Scope;
     }
   }
 }

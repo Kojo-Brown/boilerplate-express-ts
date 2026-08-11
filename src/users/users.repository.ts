@@ -38,4 +38,8 @@ export class UserRepository extends BaseRepository<UserRow, UserInsert, UserUpda
   }
 }
 
-export const userRepository = new UserRepository();
+// There is deliberately no module-level `userRepository` here. The one instance
+// is registered in the composition root under `USER_REPOSITORY` and resolved
+// from the request scope, so its lifetime is a decision someone made rather
+// than a consequence of where `new` happened to be written.
+
