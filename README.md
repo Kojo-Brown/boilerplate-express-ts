@@ -63,6 +63,9 @@ NODE_OPTIONS=--throw-deprecation pnpm test
 - [Domain events](./docs/event-bus.md) — the typed `EventBus` over
   `EventEmitter`, why a raw emitter cannot isolate a failing subscriber, and
   which consequences are deliberately *not* events.
+- [DI container](./docs/di-container.md) — singleton/scoped/transient
+  lifetimes, one scope per request, and the captive dependency the lifetimes
+  exist to make impossible.
 
 ## Authentication
 
