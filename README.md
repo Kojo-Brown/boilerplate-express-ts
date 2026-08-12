@@ -66,6 +66,10 @@ NODE_OPTIONS=--throw-deprecation pnpm test
 - [DI container](./docs/di-container.md) — singleton/scoped/transient
   lifetimes, one scope per request, and the captive dependency the lifetimes
   exist to make impossible.
+- [Middleware composition](./docs/middleware-composition.md) — the typed
+  `compose()` pipeline that replaced the ad-hoc `next()` chain, how ordering
+  became a compile error, and what the adapter for third-party middleware
+  cannot prove.
 
 ## Authentication
 

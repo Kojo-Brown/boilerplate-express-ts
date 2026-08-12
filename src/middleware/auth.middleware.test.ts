@@ -8,7 +8,7 @@ jest.mock('@/lib/jwt', () => ({
   verifyAccessToken: (token: string): JwtPayload => mockVerifyAccessToken(token),
 }));
 
-import { requireAuth, requireRole } from '@/middleware/auth.middleware';
+import { authenticate, requireAuth, requireRole, requireRoles } from '@/middleware/auth.middleware';
 
 function mockReq(overrides: Partial<Request> = {}): Request {
   return {
@@ -142,5 +142,81 @@ describe('requireRole', () => {
     requireRole('admin')(req, mockRes(), next);
 
     expect(next).toHaveBeenCalledWith();
+  });
+});
+
+describe('authenticate (pipeline step)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const principal: JwtPayload = { userId: 'u1', roles: ['user'], type: 'access' };
+
+  it('returns the request with the principal attached', () => {
+    mockVerifyAccessToken.mockReturnValue(principal);
+    const req = mockReq({ headers: { authorization: 'Bearer mock-access-token' } });
+
+    const authenticated = authenticate(req);
+
+    expect(authenticated).toBe(req);
+    expect(authenticated.auth).toEqual(principal);
+  });
+
+  it('throws rather than calling next — the pipeline owns the error path', () => {
+    const req = mockReq();
+
+    expect(() => authenticate(req)).toThrow(AppError);
+    try {
+      authenticate(req);
+    } catch (err) {
+      expect((err as AppError).statusCode).toBe(401);
+    }
+  });
+
+  it('surfaces a rejected token as the error the verifier raised', () => {
+    const boom = new AppError(401, 'Token expired', 'TOKEN_EXPIRED');
+    mockVerifyAccessToken.mockImplementation(() => {
+      throw boom;
+    });
+    const req = mockReq({ headers: { authorization: 'Bearer mock-expired-token' } });
+
+    expect(() => authenticate(req)).toThrow(boom);
+  });
+});
+
+describe('requireRoles (pipeline step)', () => {
+  const authenticatedReq = (roles: string[]): ReturnType<typeof authenticate> => {
+    const req = mockReq();
+    req.auth = { userId: 'u1', roles, type: 'access' };
+    return req as ReturnType<typeof authenticate>;
+  };
+
+  it('returns the request unchanged when a role matches', () => {
+    const req = authenticatedReq(['admin']);
+
+    expect(requireRoles('admin')(req)).toBe(req);
+  });
+
+  it('accepts any one of several roles', () => {
+    const req = authenticatedReq(['moderator']);
+
+    expect(requireRoles('admin', 'moderator')(req)).toBe(req);
+  });
+
+  it('throws 403 when the principal holds none of them', () => {
+    const req = authenticatedReq(['user']);
+
+    try {
+      requireRoles('admin')(req);
+      throw new Error('expected requireRoles to throw');
+    } catch (err) {
+      expect((err as AppError).statusCode).toBe(403);
+      expect((err as AppError).code).toBe('FORBIDDEN');
+    }
+  });
+
+  it('refuses an empty role list at wiring time', () => {
+    // Reading `requireRoles()` as "any role will do" is the mistake this
+    // prevents; it authorises nobody, and a 403 per request is a slow way to
+    // find that out.
+    expect(() => requireRoles()).toThrow(RangeError);
   });
 });

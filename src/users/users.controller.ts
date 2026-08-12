@@ -1,13 +1,8 @@
-import type { Request, RequestHandler } from 'express';
+import type { Request } from 'express';
 import { AppError } from '@/lib/errors';
+import type { Authenticated } from '@/lib/pipeline';
 import type { RouteOperation } from '@/lib/route-decorators';
-import {
-  MemoryCacheStore,
-  toRequestHandler,
-  withCache,
-  withRetry,
-  withTimeout,
-} from '@/lib/route-decorators';
+import { MemoryCacheStore, withCache, withRetry, withTimeout } from '@/lib/route-decorators';
 import { EVENT_BUS, REQUEST_CONTEXT, USER_REPOSITORY } from '@/container/tokens';
 import { scopeOf } from '@/middleware/container.middleware';
 import type { UserRow } from '@/users/users.repository';
@@ -52,16 +47,35 @@ function cachedRead<TResult, TReq extends Request>(
 }
 
 /**
+ * What each route's pipeline has established by the time its operation runs.
+ *
+ * Exported because these are the contract between `users.router.ts` and the
+ * operations below: the router has to build a pipeline that produces one of
+ * these, and it cannot do that without the steps that make each claim true.
+ */
+export type ListUsersRequest = Authenticated<Request>;
+export type GetUserRequest = Authenticated<Request<UserIdParams>>;
+export type CreateUserRequest = Authenticated<
+  // `Request['params']` rather than the `Record<string, string>` this declared
+  // before: Express 5 types a route parameter as `string | string[]`, because a
+  // pattern can bind the same name twice. Nothing checked the difference while
+  // `toRequestHandler`'s cast stood between the router and this signature; the
+  // pipeline checks it, and the route has no parameters to narrow anyway.
+  Request<Request['params'], unknown, CreateUserBody>
+>;
+export type UpdateUserRequest = Authenticated<Request<UserIdParams, unknown, UpdateUserBody>>;
+
+/**
  * Collaborators come out of the request scope rather than a module import.
  *
  * The repository is a container singleton, so this is the same object every
  * time; the point is that its lifetime is declared in one file instead of being
  * whatever `new UserRepository()` at module scope happened to mean.
  */
-const listUsers: RouteOperation<UserRow[]> = async (req) =>
+const listUsers: RouteOperation<UserRow[], ListUsersRequest> = async (req) =>
   scopeOf(req).resolve(USER_REPOSITORY).findAll({ orderBy: 'created_at', order: 'ASC' });
 
-const getUser: RouteOperation<UserRow, Request<UserIdParams>> = async (req) => {
+const getUser: RouteOperation<UserRow, GetUserRequest> = async (req) => {
   const user = await scopeOf(req).resolve(USER_REPOSITORY).findById(req.params.id);
   if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
   return user;
@@ -76,31 +90,28 @@ const getUser: RouteOperation<UserRow, Request<UserIdParams>> = async (req) => {
  * a correctness consequence of the write, so it belongs on the write's own
  * error path. Events carry the consequences the publisher can afford to lose.
  */
-const createUser: RouteOperation<UserRow, Request<Record<string, string>, unknown, CreateUserBody>> =
-  async (req) => {
-    const scope = scopeOf(req);
-    const context = scope.resolve(REQUEST_CONTEXT);
+const createUser: RouteOperation<UserRow, CreateUserRequest> = async (req) => {
+  const scope = scopeOf(req);
+  const context = scope.resolve(REQUEST_CONTEXT);
 
-    const user = await scope.resolve(USER_REPOSITORY).create(req.body);
-    await usersCache.clear();
+  const user = await scope.resolve(USER_REPOSITORY).create(req.body);
+  await usersCache.clear();
 
-    await scope.resolve(EVENT_BUS).publish(
-      'user.created',
-      {
-        userId: user.id,
-        email: user.email,
-        roles: user.roles,
-        actorId: context.actorId,
-      },
-      { correlationId: context.correlationId },
-    );
+  await scope.resolve(EVENT_BUS).publish(
+    'user.created',
+    {
+      userId: user.id,
+      email: user.email,
+      roles: user.roles,
+      actorId: context.actorId,
+    },
+    { correlationId: context.correlationId },
+  );
 
-    return user;
-  };
+  return user;
+};
 
-const updateUser: RouteOperation<UserRow, Request<UserIdParams, unknown, UpdateUserBody>> = async (
-  req,
-) => {
+const updateUser: RouteOperation<UserRow, UpdateUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
 
@@ -125,7 +136,7 @@ const updateUser: RouteOperation<UserRow, Request<UserIdParams, unknown, UpdateU
   return user;
 };
 
-const removeUser: RouteOperation<void, Request<UserIdParams>> = async (req) => {
+const removeUser: RouteOperation<void, GetUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
 
@@ -145,10 +156,16 @@ const removeUser: RouteOperation<void, Request<UserIdParams>> = async (req) => {
 };
 
 /**
- * Transport only. Params and bodies arrive already parsed by `validate()` on
- * the router, so nothing here re-derives them or hand-rolls a 422; the
- * operations above never touch `res`, so the decorators around them are free
- * to re-run or replay their results.
+ * Decorated operations, not Express handlers.
+ *
+ * This used to export `RequestHandler`s built here with `toRequestHandler`,
+ * which meant the request type each operation was written against — parsed
+ * params, a parsed body, a principal — was erased at this line and re-asserted
+ * inside the adapter. The router then had to be trusted to put the matching
+ * `validate()` and `requireAuth` above it. Handing the pipeline an operation
+ * instead moves that adapter to the end of the chain that establishes those
+ * things, so `UpdateUserRequest` and its siblings above became a requirement
+ * the wiring has to satisfy rather than a claim it makes.
  *
  * Writes get a deadline but no retry. `PUT` and `DELETE` are idempotent enough
  * for `withRetry` to replay by default, and that is exactly the trap: a delete
@@ -156,13 +173,18 @@ const removeUser: RouteOperation<void, Request<UserIdParams>> = async (req) => {
  * on the retry, reporting failure for work that succeeded. Replaying a write
  * safely needs a deduplication key, not a retry loop.
  */
-export const usersController: Record<
-  'list' | 'getById' | 'create' | 'update' | 'remove',
-  RequestHandler
-> = {
-  list: toRequestHandler(cachedRead(listUsers, 'User list')),
-  getById: toRequestHandler(cachedRead(getUser, 'User lookup')),
-  create: toRequestHandler(withTimeout(createUser, { ms: USER_QUERY_TIMEOUT_MS }), { status: 201 }),
-  update: toRequestHandler(withTimeout(updateUser, { ms: USER_QUERY_TIMEOUT_MS })),
-  remove: toRequestHandler(withTimeout(removeUser, { ms: USER_QUERY_TIMEOUT_MS }), { status: 204 }),
+export interface UsersOperations {
+  list: RouteOperation<UserRow[], ListUsersRequest>;
+  getById: RouteOperation<UserRow, GetUserRequest>;
+  create: RouteOperation<UserRow, CreateUserRequest>;
+  update: RouteOperation<UserRow, UpdateUserRequest>;
+  remove: RouteOperation<void, GetUserRequest>;
+}
+
+export const usersOperations: UsersOperations = {
+  list: cachedRead(listUsers, 'User list'),
+  getById: cachedRead(getUser, 'User lookup'),
+  create: withTimeout(createUser, { ms: USER_QUERY_TIMEOUT_MS }),
+  update: withTimeout(updateUser, { ms: USER_QUERY_TIMEOUT_MS }),
+  remove: withTimeout(removeUser, { ms: USER_QUERY_TIMEOUT_MS }),
 };
