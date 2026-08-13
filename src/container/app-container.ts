@@ -1,8 +1,16 @@
 import type { Container } from '@/lib/container';
 import { createContainer } from '@/lib/container';
-import { EVENT_BUS, REQUEST, REQUEST_CONTEXT, USER_REPOSITORY } from '@/container/tokens';
+import {
+  EVENT_BUS,
+  IDEMPOTENCY_STORE,
+  REQUEST,
+  REQUEST_CONTEXT,
+  USER_REPOSITORY,
+} from '@/container/tokens';
 import { createRequestContext } from '@/container/request-context';
+import { env } from '@/config/env';
 import { domainEventBus } from '@/events';
+import { PostgresIdempotencyStore } from '@/idempotency';
 import { UserRepository } from '@/users/users.repository';
 
 /**
@@ -31,6 +39,23 @@ export function registerAppDependencies(container: Container): Container {
        * not close it.
        */
       .registerValue(EVENT_BUS, domainEventBus)
+
+      /**
+       * Stateless like the repository — the state is the table — so one
+       * instance, configured once from the environment. Retention and lease
+       * are operational numbers rather than code constants: how long a
+       * response stays replayable is a data-retention decision, and the lease
+       * has to be raised by whoever knows how slow the slowest guarded route
+       * is allowed to be.
+       */
+      .registerSingleton(
+        IDEMPOTENCY_STORE,
+        () =>
+          new PostgresIdempotencyStore({
+            retentionMs: env.IDEMPOTENCY_RETENTION_SECONDS * 1000,
+            leaseMs: env.IDEMPOTENCY_LEASE_SECONDS * 1000,
+          }),
+      )
 
       /** Seeded by `containerMiddleware`; see `REQUEST`. */
       .registerSeed(REQUEST)

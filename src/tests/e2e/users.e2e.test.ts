@@ -13,6 +13,19 @@ jest.mock('@/lib/password', () => ({
   hashPassword: jest.fn(async (plain: string) => `argon2id-mock:${plain}`),
 }));
 
+/**
+ * `POST /v1/users` now claims an `Idempotency-Key` before it runs, and the
+ * registered store is the Postgres one — which would issue its statements
+ * through the `@/db/query` mock below and read the responses this suite queues
+ * for the *repository*. Substituting the in-memory implementation keeps the two
+ * concerns apart, so a test that makes every query reject is still asserting
+ * that the repository failed rather than that the claim did.
+ */
+jest.mock('@/idempotency/postgres.store', () => ({
+  PostgresIdempotencyStore: jest.requireActual('@/idempotency/memory.store')
+    .MemoryIdempotencyStore as unknown,
+}));
+
 const mockQuery = jest.fn();
 const mockQueryOne = jest.fn();
 const mockQueryCount = jest.fn();
@@ -157,6 +170,7 @@ describe('POST /v1/users (admin only)', () => {
     const res = await request(app)
       .post('/v1/users')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'users-e2e-create')
       .send({ email: 'charlie@example.com', roles: ['user'] });
 
     expect(res.status).toBe(201);
@@ -173,6 +187,7 @@ describe('POST /v1/users (admin only)', () => {
     const res = await request(app)
       .post('/v1/users')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'users-e2e-invalid-email')
       .send({ email: 'not-an-email', roles: ['user'] });
 
     expect(res.status).toBe(422);
@@ -366,6 +381,7 @@ describe('error translation reaches the wire', () => {
     const res = await request(app)
       .post('/v1/users')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'users-e2e-duplicate-email')
       .send({ email: 'alice@example.com' });
 
     expect(res.status).toBe(409);
@@ -384,6 +400,7 @@ describe('error translation reaches the wire', () => {
     const res = await request(app)
       .post('/v1/users')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'users-e2e-sql-fault')
       .send({ email: 'charlie@example.com' });
 
     expect(res.status).toBe(500);
@@ -397,6 +414,7 @@ describe('error translation reaches the wire', () => {
     const res = await request(app)
       .post('/v1/users')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'users-e2e-issues-array')
       .send({ email: 'not-an-email' });
 
     expect(res.status).toBe(422);
@@ -468,6 +486,7 @@ describe('read caching on the users routes', () => {
     await request(app)
       .post('/v1/users')
       .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'users-e2e-cache-invalidation')
       .send({ email: 'charlie@example.com', roles: ['user'] });
 
     const afterWrite = await request(app).get('/v1/users').set('Authorization', `Bearer ${token}`);
