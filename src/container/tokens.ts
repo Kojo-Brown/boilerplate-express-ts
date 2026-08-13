@@ -3,6 +3,7 @@ import type { InjectionToken } from '@/lib/container';
 import { createToken } from '@/lib/container';
 import type { RequestContext } from '@/container/request-context';
 import type { DomainEventBus } from '@/events';
+import type { IdempotencyStore } from '@/idempotency/idempotency.types';
 import type { UserRepository } from '@/users/users.repository';
 
 /**
@@ -33,3 +34,13 @@ export const USER_REPOSITORY: InjectionToken<UserRepository> =
 
 export const EVENT_BUS: InjectionToken<DomainEventBus> =
   createToken<DomainEventBus>('DomainEventBus');
+
+/**
+ * Where `Idempotency-Key` claims are recorded.
+ *
+ * Typed as the interface rather than the Postgres class on purpose: the routes
+ * that depend on it depend on the protocol, and a test that swaps in the
+ * in-memory implementation is then a registration, not a monkey-patch.
+ */
+export const IDEMPOTENCY_STORE: InjectionToken<IdempotencyStore> =
+  createToken<IdempotencyStore>('IdempotencyStore');

@@ -28,6 +28,14 @@ const envSchema = z.object({
   // for mail delivery plus a distracted user without leaving one live in an
   // archive for a week.
   MAGIC_LINK_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  // How long a recorded response stays replayable. A day matches what client
+  // libraries assume when they retry a failed submission, and is the window
+  // during which a duplicate is absorbed rather than executed.
+  IDEMPOTENCY_RETENTION_SECONDS: z.coerce.number().int().positive().default(86_400),
+  // How long an unfinished claim blocks a retry before it is treated as
+  // abandoned. Must stay above the slowest guarded route: below it, a merely
+  // slow request is taken over and its work runs twice.
+  IDEMPOTENCY_LEASE_SECONDS: z.coerce.number().int().positive().default(60),
 });
 
 const parsed = envSchema.safeParse(process.env);

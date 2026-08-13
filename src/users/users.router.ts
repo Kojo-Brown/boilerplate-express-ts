@@ -5,6 +5,7 @@ import {
   updateUserBodySchema,
   userIdParamsSchema,
 } from '@/users/users.schemas';
+import { idempotent } from '@/idempotency';
 import { compose } from '@/lib/pipeline';
 import { validateBody, validateParams } from '@/middleware/validate.middleware';
 import { authenticate, requireRoles } from '@/middleware/auth.middleware';
@@ -39,9 +40,24 @@ router.get(
   authenticated.use(validateParams(userIdParamsSchema)).handle(usersOperations.getById),
 );
 
+/**
+ * The one route here that is not idempotent by its HTTP method, and therefore
+ * the one that needs a key to become so: a retried `POST /v1/users` creates a
+ * second user, where a retried `PUT` or `DELETE` converges on the same state.
+ * That is also why `usersOperations.create` gets a timeout but no `withRetry` —
+ * a retry loop cannot replay a write safely, and this is what can.
+ *
+ * `idempotent()` sits after `requireRoles` because the key is scoped by the
+ * principal, and before `validateBody` because the fingerprint should be taken
+ * over the body as it arrived: a retry of a request the schema rejected then
+ * replays that 422 instead of re-deriving it.
+ */
 router.post(
   '/',
-  adminOnly.use(validateBody(createUserBodySchema)).handle(usersOperations.create, { status: 201 }),
+  adminOnly
+    .use(idempotent())
+    .use(validateBody(createUserBodySchema))
+    .handle(usersOperations.create, { status: 201 }),
 );
 
 router.put(

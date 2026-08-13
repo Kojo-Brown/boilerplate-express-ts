@@ -70,6 +70,10 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   `compose()` pipeline that replaced the ad-hoc `next()` chain, how ordering
   became a compile error, and what the adapter for third-party middleware
   cannot prove.
+- [Idempotency](./docs/idempotency.md) — `Idempotency-Key` with a Postgres
+  dedupe table and response replay, why the record is taken at the response
+  boundary rather than around the handler, and the one duplicate the lease
+  cannot rule out.
 
 ## Authentication
 
