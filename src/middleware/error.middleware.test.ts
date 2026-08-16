@@ -8,7 +8,8 @@ function makeRes(): Response {
   const json = jest.fn().mockReturnValue(res);
   const status = jest.fn().mockReturnValue(res);
   const end = jest.fn().mockReturnValue(res);
-  Object.assign(res, { json, status, end });
+  const setHeader = jest.fn().mockReturnValue(res);
+  Object.assign(res, { json, status, end, setHeader });
   return res;
 }
 
@@ -26,6 +27,33 @@ describe('errorMiddleware', () => {
       meta: null,
       error: { code: 'FORBIDDEN', message: 'Forbidden' },
     });
+  });
+
+  it('sets the headers an error carries, before the body', () => {
+    const res = makeRes();
+    // `ETag` on a 412 and `Retry-After` on a 429 are the actionable half of
+    // those answers. An operation has no `Response` to set them on, so the
+    // error carries them and this is where they land.
+    errorMiddleware(
+      new AppError(412, 'Precondition failed', 'PRECONDITION_FAILED', { ETag: '"9"' }),
+      req,
+      res,
+      next,
+    );
+
+    expect(res.setHeader as jest.Mock).toHaveBeenCalledWith('ETag', '"9"');
+    // After `status`/`json` the head is already on the wire and a header is
+    // silently dropped.
+    const headerOrder = (res.setHeader as jest.Mock).mock.invocationCallOrder[0]!;
+    const bodyOrder = (res.json as jest.Mock).mock.invocationCallOrder[0]!;
+    expect(headerOrder).toBeLessThan(bodyOrder);
+  });
+
+  it('sets no headers for an error that carries none', () => {
+    const res = makeRes();
+    errorMiddleware(new AppError(403, 'Forbidden', 'FORBIDDEN'), req, res, next);
+
+    expect(res.setHeader as jest.Mock).not.toHaveBeenCalled();
   });
 
   it('sends a ValidationError as 422 with the issues attached', () => {

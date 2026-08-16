@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import { BaseRepository } from '@/db/repository';
+import { VersionedRepository } from '@/db/versioned-repository';
 
 export interface UserRow extends QueryResultRow {
   id: string;
@@ -8,6 +8,13 @@ export interface UserRow extends QueryResultRow {
   roles: string[];
   created_at: Date;
   updated_at: Date;
+  /**
+   * Bumped by a database trigger on every update, never by a caller — see
+   * `migrations/*_users_version_column.ts`. It is on the row type, and
+   * therefore in the response body, because a client that cannot read the
+   * current version has nothing to put in `If-Match`.
+   */
+  version: number;
 }
 
 export type UserInsert = {
@@ -22,7 +29,7 @@ export type UserUpdate = {
   roles?: string[];
 };
 
-export class UserRepository extends BaseRepository<UserRow, UserInsert, UserUpdate> {
+export class UserRepository extends VersionedRepository<UserRow, UserInsert, UserUpdate> {
   protected override readonly tableName = 'users';
 
   async findByEmail(email: string): Promise<UserRow | null> {

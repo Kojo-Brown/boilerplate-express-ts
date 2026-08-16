@@ -46,6 +46,7 @@ const SEED_USERS: UserRow[] = [
     roles: ['admin', 'user'],
     created_at: new Date('2024-01-01T00:00:00Z'),
     updated_at: new Date('2024-01-01T00:00:00Z'),
+    version: 3,
   },
   {
     id: 'user-uuid-2',
@@ -54,6 +55,7 @@ const SEED_USERS: UserRow[] = [
     roles: ['user'],
     created_at: new Date('2024-01-02T00:00:00Z'),
     updated_at: new Date('2024-01-02T00:00:00Z'),
+    version: 7,
   },
 ];
 
@@ -161,6 +163,7 @@ describe('POST /v1/users (admin only)', () => {
     roles: ['user'],
     created_at: new Date('2024-03-01T00:00:00Z'),
     updated_at: new Date('2024-03-01T00:00:00Z'),
+    version: 1,
   };
 
   it('returns 201 with created user for admin', async () => {
@@ -219,20 +222,31 @@ describe('PUT /v1/users/:id', () => {
     ...SEED_USERS[1]!,
     email: 'bob-updated@example.com',
     updated_at: new Date('2024-06-01T00:00:00Z'),
+    version: 8,
   };
 
+  /** What the conditional `UPDATE` statement returns when it matched a row. */
+  const updateHit = { ...updatedUser, __updated: true };
+
   it('returns 200 with updated user', async () => {
-    mockQueryOne.mockResolvedValue(updatedUser);
+    mockQueryOne.mockResolvedValue(updateHit);
     const token = await getUserToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
       .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"7"')
       .send({ email: 'bob-updated@example.com' });
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ email: 'bob-updated@example.com' });
     expect(res.body.error).toBeNull();
+    // The validator for the state this write just produced, so the client's
+    // next conditional write does not need a `GET` in between.
+    expect(res.headers.etag).toBe('"8"');
+    // The discriminator the statement carried is an implementation detail of
+    // the repository and must not reach the client.
+    expect(res.body.data).not.toHaveProperty('__updated');
   });
 
   it('returns 404 when user does not exist', async () => {
@@ -242,6 +256,7 @@ describe('PUT /v1/users/:id', () => {
     const res = await request(app)
       .put('/v1/users/nonexistent-id')
       .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"7"')
       .send({ email: 'new@example.com' });
 
     expect(res.status).toBe(404);
@@ -254,6 +269,7 @@ describe('PUT /v1/users/:id', () => {
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
       .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"7"')
       .send({ email: 'bad-email' });
 
     expect(res.status).toBe(422);
@@ -263,20 +279,144 @@ describe('PUT /v1/users/:id', () => {
   it('returns 401 when no token is provided', async () => {
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
+      .set('If-Match', '"7"')
       .send({ email: 'new@example.com' });
 
     expect(res.status).toBe(401);
   });
 });
 
+describe('optimistic concurrency on PUT /v1/users/:id', () => {
+  const conflictRow = { ...SEED_USERS[1]!, __updated: false };
+
+  it('returns 428 when the request states no expectation at all', async () => {
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ email: 'bob-updated@example.com' });
+
+    expect(res.status).toBe(428);
+    expect(res.body.error.code).toBe('PRECONDITION_REQUIRED');
+    // The write must not have been attempted.
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+
+  it('returns 412 with the current ETag when the row moved on', async () => {
+    mockQueryOne.mockResolvedValue(conflictRow);
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"3"')
+      .send({ email: 'bob-updated@example.com' });
+
+    expect(res.status).toBe(412);
+    expect(res.body.error.code).toBe('PRECONDITION_FAILED');
+    // Recovery in one round trip: the client can rebuild its patch against
+    // version 7 without re-reading the row first.
+    expect(res.headers.etag).toBe('"7"');
+  });
+
+  it('sends the expected versions to the database as a matchable set', async () => {
+    mockQueryOne.mockResolvedValue({ ...SEED_USERS[1]!, __updated: true });
+    const token = await getUserToken();
+
+    await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"6", "7"')
+      .send({ email: 'bob-updated@example.com' });
+
+    const [sql, params] = mockQueryOne.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('"version" = ANY(');
+    expect(params).toContainEqual([6, 7]);
+  });
+
+  it('adds no version predicate for If-Match: *', async () => {
+    mockQueryOne.mockResolvedValue({ ...SEED_USERS[1]!, __updated: true });
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*')
+      .send({ email: 'bob-updated@example.com' });
+
+    expect(res.status).toBe(200);
+    const [sql] = mockQueryOne.mock.calls[0] as [string, unknown[]];
+    expect(sql).not.toContain('ANY(');
+  });
+
+  it('returns 400, not 412, for a weak entity-tag', async () => {
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', 'W/"7"')
+      .send({ email: 'bob-updated@example.com' });
+
+    // A 412 here would send the client back for a fresh validator it would
+    // then weaken again, forever.
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('PRECONDITION_MALFORMED');
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a header that is not an entity-tag list', async () => {
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '7')
+      .send({ email: 'bob-updated@example.com' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('PRECONDITION_MALFORMED');
+  });
+
+  it('drops a cached read on conflict so the client’s recovery GET is fresh', async () => {
+    mockQueryOne.mockResolvedValueOnce(SEED_USERS[1]!).mockResolvedValue(conflictRow);
+    const token = await getUserToken();
+
+    const before = await request(app)
+      .get('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`);
+    expect(before.body.meta).toEqual({ cache: 'miss' });
+
+    await request(app)
+      .put('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"3"')
+      .send({ email: 'bob-updated@example.com' });
+
+    const after = await request(app)
+      .get('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`);
+
+    // Left cached, this read would answer from the same entry that produced
+    // the stale validator, and the client's retry would conflict again for as
+    // long as the TTL lasts.
+    expect(after.body.meta).toEqual({ cache: 'miss' });
+  });
+});
+
 describe('DELETE /v1/users/:id (admin only)', () => {
+  /** What the conditional `DELETE` statement returns when it removed the row. */
+  const deleteHit = { __deleted: true, version: null };
+
   it('returns 204 on successful delete', async () => {
-    mockQueryOne.mockResolvedValue({ id: 'user-uuid-2' });
+    mockQueryOne.mockResolvedValue(deleteHit);
     const token = await getAdminToken();
 
     const res = await request(app)
       .delete('/v1/users/user-uuid-2')
-      .set('Authorization', `Bearer ${token}`);
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*');
 
     expect(res.status).toBe(204);
   });
@@ -287,10 +427,37 @@ describe('DELETE /v1/users/:id (admin only)', () => {
 
     const res = await request(app)
       .delete('/v1/users/nonexistent-id')
-      .set('Authorization', `Bearer ${token}`);
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*');
 
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('returns 412 when the row moved on since the caller read it', async () => {
+    mockQueryOne.mockResolvedValue({ __deleted: false, version: 9 });
+    const token = await getAdminToken();
+
+    const res = await request(app)
+      .delete('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"4"');
+
+    expect(res.status).toBe(412);
+    expect(res.body.error.code).toBe('PRECONDITION_FAILED');
+    expect(res.headers.etag).toBe('"9"');
+  });
+
+  it('returns 428 without an If-Match, and deletes nothing', async () => {
+    const token = await getAdminToken();
+
+    const res = await request(app)
+      .delete('/v1/users/user-uuid-2')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(428);
+    expect(res.body.error.code).toBe('PRECONDITION_REQUIRED');
+    expect(mockQueryOne).not.toHaveBeenCalled();
   });
 
   it('returns 403 for non-admin user', async () => {
@@ -298,13 +465,14 @@ describe('DELETE /v1/users/:id (admin only)', () => {
 
     const res = await request(app)
       .delete('/v1/users/user-uuid-2')
-      .set('Authorization', `Bearer ${token}`);
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*');
 
     expect(res.status).toBe(403);
   });
 
   it('returns 401 when no token is provided', async () => {
-    const res = await request(app).delete('/v1/users/user-uuid-2');
+    const res = await request(app).delete('/v1/users/user-uuid-2').set('If-Match', '*');
 
     expect(res.status).toBe(401);
   });
@@ -324,10 +492,13 @@ describe('domain events reach their subscribers through the app', () => {
     const refreshToken = (login.body.data as { refreshToken: string }).refreshToken;
     await expect(tokenStore.has(refreshToken)).resolves.toBe(true);
 
-    mockQueryOne.mockResolvedValue({ id: '2' });
+    mockQueryOne.mockResolvedValue({ __deleted: true, version: null });
     const token = await getAdminToken();
 
-    const res = await request(app).delete('/v1/users/2').set('Authorization', `Bearer ${token}`);
+    const res = await request(app)
+      .delete('/v1/users/2')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*');
 
     expect(res.status).toBe(204);
     // Without the subscriber this token stays valid for JWT_REFRESH_EXPIRES_IN
@@ -339,12 +510,13 @@ describe('domain events reach their subscribers through the app', () => {
     const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
 
     try {
-      mockQueryOne.mockResolvedValue({ id: 'user-uuid-2' });
+      mockQueryOne.mockResolvedValue({ __deleted: true, version: null });
       const token = await getAdminToken();
 
       await request(app)
         .delete('/v1/users/user-uuid-2')
         .set('Authorization', `Bearer ${token}`)
+        .set('If-Match', '*')
         .set('x-correlation-id', 'e2e-correlation-id');
 
       const audited = log.mock.calls
@@ -479,6 +651,7 @@ describe('read caching on the users routes', () => {
       roles: ['user'],
       created_at: new Date('2024-03-01T00:00:00Z'),
       updated_at: new Date('2024-03-01T00:00:00Z'),
+      version: 1,
     });
     const token = await getAdminToken();
 
@@ -511,13 +684,14 @@ describe('read caching on the users routes', () => {
   });
 
   it('does not cache a write response under the read key', async () => {
-    mockQueryOne.mockResolvedValue(SEED_USERS[1]!);
+    mockQueryOne.mockResolvedValue({ ...SEED_USERS[1]!, __updated: true });
     mockQuery.mockResolvedValue(SEED_USERS);
     const token = await getAdminToken();
 
     const write = await request(app)
       .put('/v1/users/user-uuid-2')
       .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*')
       .send({ email: 'bob-updated@example.com' });
 
     expect(write.body.meta).toBeNull();

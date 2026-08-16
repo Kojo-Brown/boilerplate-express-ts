@@ -10,6 +10,12 @@ export interface TranslatedError {
   code: string;
   message: string;
   issues?: unknown[];
+  /**
+   * Headers that belong to this answer — `ETag` on a 412, `Retry-After` on a
+   * 429. Set by the middleware before the body, so a translator can carry the
+   * actionable half of a response that a status code alone leaves out.
+   */
+  headers?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -33,7 +39,17 @@ const CORE_TRANSLATORS: readonly ErrorTranslator[] = [
       : null,
   (err) =>
     err instanceof AppError
-      ? { statusCode: err.statusCode, code: err.code ?? 'INTERNAL_ERROR', message: err.message }
+      ? {
+          statusCode: err.statusCode,
+          code: err.code ?? 'INTERNAL_ERROR',
+          message: err.message,
+          // Passed through here rather than by a translator registered for each
+          // error that needs headers: `CORE_TRANSLATORS` runs first and claims
+          // every `AppError`, so a later-registered translator for a subclass
+          // would never be reached. Any `AppError` that carries headers gets
+          // them, whichever module declared it.
+          ...(err.headers !== undefined ? { headers: err.headers } : {}),
+        }
       : null,
 ];
 

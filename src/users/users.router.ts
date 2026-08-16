@@ -6,6 +6,7 @@ import {
   userIdParamsSchema,
 } from '@/users/users.schemas';
 import { idempotent } from '@/idempotency';
+import { requireIfMatch, sendWithETag } from '@/concurrency';
 import { compose } from '@/lib/pipeline';
 import { validateBody, validateParams } from '@/middleware/validate.middleware';
 import { authenticate, requireRoles } from '@/middleware/auth.middleware';
@@ -35,9 +36,22 @@ const adminOnly = authenticated.use(requireRoles('admin'));
  */
 router.get('/', adminOnly.handle(usersOperations.list));
 
+/**
+ * `sendWithETag` instead of the default envelope write, because the writes
+ * below require `If-Match` and this is where a client learns what to put in it.
+ * A conditional API that never hands out validators leaves `*` as the only
+ * usable precondition, which is an existence check rather than concurrency
+ * control.
+ *
+ * The list route deliberately gets no `ETag`: a collection has no single
+ * version, and a tag over the whole page would change every time any member
+ * did, which is a validator no client can act on.
+ */
 router.get(
   '/:id',
-  authenticated.use(validateParams(userIdParamsSchema)).handle(usersOperations.getById),
+  authenticated
+    .use(validateParams(userIdParamsSchema))
+    .handle(usersOperations.getById, { send: sendWithETag }),
 );
 
 /**
@@ -60,17 +74,40 @@ router.post(
     .handle(usersOperations.create, { status: 201 }),
 );
 
+/**
+ * The two routes that overwrite state somebody else may have changed since the
+ * caller read it, and therefore the two that require `If-Match`.
+ *
+ * `requireIfMatch` sits ahead of `validateBody` on purpose. RFC 9110 asks that
+ * preconditions not be evaluated for a request that would have failed anyway,
+ * and that is satisfied by construction rather than by this ordering: the only
+ * place a precondition is actually *evaluated* is the `WHERE` clause of the
+ * write, which runs after every step here. What this step does is insist the
+ * expectation be stated at all, which is closer to the role check above it than
+ * to validation — and a caller who has not said what it expects to overwrite
+ * learns that before it is told anything about the accepted body shape.
+ *
+ * `DELETE` is guarded too, and not as symmetry for its own sake. "Delete the
+ * user I looked at" is a claim about a specific state, and between the read and
+ * the delete that user may have been granted a role or re-assigned; an
+ * unconditional delete throws that away with no trace. A caller that genuinely
+ * means "delete it whatever it says now" writes `If-Match: *` and pays nothing.
+ */
 router.put(
   '/:id',
   authenticated
     .use(validateParams(userIdParamsSchema))
+    .use(requireIfMatch)
     .use(validateBody(updateUserBodySchema))
-    .handle(usersOperations.update),
+    .handle(usersOperations.update, { send: sendWithETag }),
 );
 
 router.delete(
   '/:id',
-  adminOnly.use(validateParams(userIdParamsSchema)).handle(usersOperations.remove, { status: 204 }),
+  adminOnly
+    .use(validateParams(userIdParamsSchema))
+    .use(requireIfMatch)
+    .handle(usersOperations.remove, { status: 204 }),
 );
 
 export { router as usersRouter };

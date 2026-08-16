@@ -20,6 +20,7 @@ const makeUser = (overrides: Partial<UserRow> = {}): UserRow => ({
   roles: ['user'],
   created_at: new Date('2024-01-01'),
   updated_at: new Date('2024-01-01'),
+  version: 1,
   ...overrides,
 });
 
