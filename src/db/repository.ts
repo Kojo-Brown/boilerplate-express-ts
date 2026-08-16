@@ -128,10 +128,21 @@ export abstract class BaseRepository<
     return result;
   }
 
+  /**
+   * Columns an update never writes, whatever a caller puts in the patch.
+   *
+   * A method rather than the inline `Set` this used to be, because subclasses
+   * have columns of their own that the database owns — `version`, maintained by
+   * a trigger, is the first. Letting a patch through to one of those does not
+   * fail loudly: the write succeeds and the column silently disagrees with the
+   * mechanism that depends on it.
+   */
+  protected immutableColumns(): readonly string[] {
+    return this.hasTimestamps ? ['id', 'created_at', 'updated_at'] : ['id'];
+  }
+
   async update(id: string, data: TUpdate): Promise<TRow | null> {
-    const protectedCols = new Set(
-      this.hasTimestamps ? ['id', 'created_at', 'updated_at'] : ['id'],
-    );
+    const protectedCols = new Set(this.immutableColumns());
     const entries = Object.entries(data).filter(([k]) => !protectedCols.has(k));
     // Nothing to write: return the current row rather than issuing an UPDATE
     // whose only effect would be to bump `updated_at`. Checked before the

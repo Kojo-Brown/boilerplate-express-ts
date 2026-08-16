@@ -45,6 +45,7 @@ const CREATED_USER: UserRow = {
   roles: ['user'],
   created_at: new Date('2026-03-01T00:00:00Z'),
   updated_at: new Date('2026-03-01T00:00:00Z'),
+  version: 1,
 };
 
 const NEW_USER_BODY = { email: 'dana@example.com', roles: ['user'] };
@@ -191,12 +192,15 @@ describe('POST /v1/users with an Idempotency-Key', () => {
 
 describe('routes without an idempotency key', () => {
   it('leaves PUT alone — it is already idempotent by method', async () => {
-    mockQueryOne.mockResolvedValue(CREATED_USER);
+    // `PUT` carries `If-Match` rather than `Idempotency-Key`: the two guard
+    // different hazards, and this case is about the key being absent.
+    mockQueryOne.mockResolvedValue({ ...CREATED_USER, __updated: true });
     const token = await getAdminToken();
 
     const res = await request(app)
       .put(`/v1/users/${CREATED_USER.id}`)
       .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*')
       .send({ email: 'dana@example.com' });
 
     expect(res.status).toBe(200);

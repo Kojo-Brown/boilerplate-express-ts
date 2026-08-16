@@ -1,5 +1,7 @@
 import type { Request } from 'express';
 import { AppError } from '@/lib/errors';
+import type { WithPrecondition } from '@/concurrency';
+import { VersionConflictError } from '@/concurrency';
 import type { Authenticated } from '@/lib/pipeline';
 import type { RouteOperation } from '@/lib/route-decorators';
 import { MemoryCacheStore, withCache, withRetry, withTimeout } from '@/lib/route-decorators';
@@ -63,7 +65,17 @@ export type CreateUserRequest = Authenticated<
   // pipeline checks it, and the route has no parameters to narrow anyway.
   Request<Request['params'], unknown, CreateUserBody>
 >;
-export type UpdateUserRequest = Authenticated<Request<UserIdParams, unknown, UpdateUserBody>>;
+/**
+ * The two conditional writes. `WithPrecondition` is the outer wrapper for the
+ * same reason `Authenticated` is present at all: the operations below read
+ * `req.precondition` and hand it to a compare-and-swap, so a router that
+ * forgot `requireIfMatch` — turning both routes back into unconditional,
+ * lost-update-prone writes — does not compile.
+ */
+export type UpdateUserRequest = WithPrecondition<
+  Authenticated<Request<UserIdParams, unknown, UpdateUserBody>>
+>;
+export type DeleteUserRequest = WithPrecondition<Authenticated<Request<UserIdParams>>>;
 
 /**
  * Collaborators come out of the request scope rather than a module import.
@@ -111,12 +123,34 @@ const createUser: RouteOperation<UserRow, CreateUserRequest> = async (req) => {
   return user;
 };
 
+/**
+ * A compare-and-swap, not a read-then-write. The version the client named is
+ * part of the `WHERE` clause, so "has anything changed since you looked?" is
+ * decided by the same statement that does the writing and there is no window
+ * between the two for a concurrent update to slip through.
+ */
 const updateUser: RouteOperation<UserRow, UpdateUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
 
-  const user = await scope.resolve(USER_REPOSITORY).update(req.params.id, req.body);
-  if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
+  const result = await scope
+    .resolve(USER_REPOSITORY)
+    .updateWithVersion(req.params.id, req.body, req.precondition);
+
+  if (result.outcome === 'missing') throw new AppError(404, 'User not found', 'NOT_FOUND');
+
+  if (result.outcome === 'conflict') {
+    // A conflict is evidence that somebody's view of this row is out of date,
+    // and this replica's cache is a candidate: if the stale `ETag` the client
+    // sent came from a cached read here, leaving the entry in place means its
+    // recovery `GET` is answered with the same stale validator and its retry
+    // conflicts again — a livelock for the length of the TTL. Dropping the
+    // cached reads costs one round trip on a path that is already failing.
+    await usersCache.clear();
+    throw new VersionConflictError(result.currentVersion);
+  }
+
+  const user = result.row;
   await usersCache.clear();
 
   await scope.resolve(EVENT_BUS).publish(
@@ -136,12 +170,21 @@ const updateUser: RouteOperation<UserRow, UpdateUserRequest> = async (req) => {
   return user;
 };
 
-const removeUser: RouteOperation<void, GetUserRequest> = async (req) => {
+const removeUser: RouteOperation<void, DeleteUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
 
-  const deleted = await scope.resolve(USER_REPOSITORY).delete(req.params.id);
-  if (!deleted) throw new AppError(404, 'User not found', 'NOT_FOUND');
+  const result = await scope
+    .resolve(USER_REPOSITORY)
+    .deleteWithVersion(req.params.id, req.precondition);
+
+  if (result.outcome === 'missing') throw new AppError(404, 'User not found', 'NOT_FOUND');
+
+  if (result.outcome === 'conflict') {
+    await usersCache.clear();
+    throw new VersionConflictError(result.currentVersion);
+  }
+
   await usersCache.clear();
 
   // Awaited rather than fired and forgotten. `publish` cannot reject, so this
@@ -178,7 +221,7 @@ export interface UsersOperations {
   getById: RouteOperation<UserRow, GetUserRequest>;
   create: RouteOperation<UserRow, CreateUserRequest>;
   update: RouteOperation<UserRow, UpdateUserRequest>;
-  remove: RouteOperation<void, GetUserRequest>;
+  remove: RouteOperation<void, DeleteUserRequest>;
 }
 
 export const usersOperations: UsersOperations = {

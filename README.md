@@ -74,6 +74,10 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   dedupe table and response replay, why the record is taken at the response
   boundary rather than around the handler, and the one duplicate the lease
   cannot rule out.
+- [Optimistic concurrency](./docs/optimistic-concurrency.md) — `If-Match` and
+  `ETag` over a trigger-maintained `version` column, why the check lives in the
+  `WHERE` clause rather than in a read before it, and what the `If-Match` parser
+  rejects as opposed to what it merely fails to match.
 
 ## Authentication
 

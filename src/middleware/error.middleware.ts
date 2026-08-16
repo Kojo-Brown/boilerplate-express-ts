@@ -18,6 +18,11 @@ export function errorMiddleware(
   const translated = translateError(err);
 
   if (translated !== null) {
+    // Before the body: `sendFail` writes the head, and a header set after that
+    // is silently dropped.
+    for (const [name, value] of Object.entries(translated.headers ?? {})) {
+      res.setHeader(name, value);
+    }
     sendFail(res, translated.statusCode, translated.code, translated.message, translated.issues);
     return;
   }
