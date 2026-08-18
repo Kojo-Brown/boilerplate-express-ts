@@ -34,7 +34,40 @@ jest.mock('@/db/query', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   queryOne: (...args: unknown[]) => mockQueryOne(...args),
   queryCount: (...args: unknown[]) => mockQueryCount(...args),
+  // The repository's default executor. Absent from this factory it would be
+  // `undefined`, and every call that did not explicitly pass a transaction
+  // would fail on it — see `poolQueryable` in `@/db/query`.
+  poolQueryable: { query: (...args: unknown[]) => mockQuery(...args), queryOne: (...args: unknown[]) => mockQueryOne(...args), queryCount: (...args: unknown[]) => mockQueryCount(...args) },
 }));
+
+/**
+ * A transaction, for the purposes of these cases, is the mocked query layer.
+ *
+ * The two writes below now run inside `withRetryableTransaction`, which takes a
+ * real pooled connection — something this suite has never had. Rather than
+ * mocking `pg` itself, the callback is handed a client that forwards to the
+ * same mocks every other statement here goes through, so a case can still
+ * queue a response and assert the HTTP answer.
+ *
+ * What that gives up is stated plainly: nothing here exercises BEGIN/COMMIT,
+ * rollback, `SET LOCAL`, or the retry loop. Those have their own suites
+ * (`db/transaction.test.ts`, `db/retry-transaction.test.ts`); these cases are
+ * about what the route answers.
+ */
+jest.mock('@/db/transaction', () => {
+  const { IN_TRANSACTION } = jest.requireActual('@/db/queryable') as {
+    IN_TRANSACTION: symbol;
+  };
+  return {
+    withTransaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        [IN_TRANSACTION]: true,
+        query: (...args: unknown[]) => mockQuery(...args),
+        queryOne: (...args: unknown[]) => mockQueryOne(...args),
+        queryCount: (...args: unknown[]) => mockQueryCount(...args),
+      }),
+  };
+});
 
 const app = createApp();
 

@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import { AppError } from '@/lib/errors';
+import { fullJitterDelay } from '@/lib/backoff';
 import type { RouteOperation } from '@/lib/route-decorators/types';
 import { deriveContext } from '@/lib/route-decorators/types';
 
@@ -81,17 +82,6 @@ function toError(reason: unknown): Error {
 }
 
 /**
- * Full jitter (`random() * cap`), not equal jitter or a fixed step. Retrying a
- * shared dependency on a fixed schedule re-synchronises every client that
- * failed together, so the second attempt arrives as one spike and the recovery
- * fails the same way the outage did.
- */
-function backoffDelay(attempt: number, base: number, max: number, random: () => number): number {
-  const cap = Math.min(max, base * 2 ** (attempt - 1));
-  return Math.floor(random() * cap);
-}
-
-/**
  * Re-runs the operation while it keeps failing transiently.
  *
  * Safe to place around an operation precisely because a `RouteOperation` has
@@ -137,7 +127,10 @@ export function withRetry<TResult, TReq extends Request = Request>(
       } catch (err) {
         lastError = err;
         if (attempt === maxAttempts || ctx.signal.aborted || !isRetryable(err)) break;
-        await sleep(backoffDelay(attempt, baseDelayMs, maxDelayMs, random), ctx.signal);
+        await sleep(
+          fullJitterDelay(attempt, { baseMs: baseDelayMs, maxMs: maxDelayMs, random }),
+          ctx.signal,
+        );
       }
     }
 

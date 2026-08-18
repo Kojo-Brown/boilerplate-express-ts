@@ -6,10 +6,16 @@ jest.mock('@/db/query', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   queryOne: (...args: unknown[]) => mockQueryOne(...args),
   queryCount: (...args: unknown[]) => mockQueryCount(...args),
+  // The repository's default executor. Absent from this factory it would be
+  // `undefined`, and every call that did not explicitly pass a transaction
+  // would fail on it — see `poolQueryable` in `@/db/query`.
+  poolQueryable: { query: (...args: unknown[]) => mockQuery(...args), queryOne: (...args: unknown[]) => mockQueryOne(...args), queryCount: (...args: unknown[]) => mockQueryCount(...args) },
 }));
 
 import { UserRepository } from '@/users/users.repository';
 import type { UserRow } from '@/users/users.repository';
+import type { TransactionClient } from '@/db/transaction';
+import { IN_TRANSACTION } from '@/db/queryable';
 
 const repo = new UserRepository();
 
@@ -117,5 +123,46 @@ describe('UserRepository.findByRole', () => {
   it('returns an empty list when nobody holds the role', async () => {
     mockQuery.mockResolvedValue([]);
     await expect(repo.findByRole('nobody-has-this')).resolves.toEqual([]);
+  });
+});
+
+describe('UserRepository.lockAdmins', () => {
+  const tx: TransactionClient = {
+    [IN_TRANSACTION]: true,
+    query: mockQuery,
+    queryOne: mockQueryOne,
+    queryCount: mockQueryCount,
+  };
+
+  it('locks every holder of the admin role, in id order, on the caller transaction', async () => {
+    mockQuery.mockResolvedValue([]);
+
+    await repo.lockAdmins(tx, 'update');
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      'SELECT * FROM "users" WHERE "roles" @> $1 ORDER BY "id" ASC FOR UPDATE',
+      [['admin']],
+    );
+  });
+
+  /**
+   * The two writers need different modes: a role change touches no key, so it
+   * takes the weaker lock and leaves inserts that merely reference the user
+   * unblocked, while a delete changes the key and needs the stronger one.
+   */
+  it('takes the weaker no-key lock when the caller asks for it', async () => {
+    mockQuery.mockResolvedValue([]);
+
+    await repo.lockAdmins(tx, 'no key update');
+
+    const [sql] = mockQuery.mock.calls[0] as [string];
+    expect(sql).toContain('FOR NO KEY UPDATE');
+  });
+
+  it('returns the locked administrators', async () => {
+    const admins = [makeUser({ id: 'admin-1', roles: ['admin'] })];
+    mockQuery.mockResolvedValue(admins);
+
+    await expect(repo.lockAdmins(tx, 'update')).resolves.toBe(admins);
   });
 });

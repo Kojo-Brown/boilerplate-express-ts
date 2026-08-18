@@ -6,11 +6,18 @@ jest.mock('@/db/query', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   queryOne: (...args: unknown[]) => mockQueryOne(...args),
   queryCount: (...args: unknown[]) => mockQueryCount(...args),
+  // The repository's default executor. Absent from this factory it would be
+  // `undefined`, and every call that did not explicitly pass a transaction
+  // would fail on it — see `poolQueryable` in `@/db/query`.
+  poolQueryable: { query: (...args: unknown[]) => mockQuery(...args), queryOne: (...args: unknown[]) => mockQueryOne(...args), queryCount: (...args: unknown[]) => mockQueryCount(...args) },
 }));
 
 import type { QueryResultRow } from 'pg';
 import { BaseRepository } from '@/db/repository';
 import type { FindAllOptions, WhereCondition } from '@/db/repository';
+import type { RowLockOptions } from '@/db/locking';
+import type { TransactionClient } from '@/db/transaction';
+import { IN_TRANSACTION } from '@/db/queryable';
 
 interface TestRow extends QueryResultRow {
   id: string;
@@ -280,5 +287,195 @@ describe('BaseRepository.count', () => {
     expect(mockQueryCount).toHaveBeenCalledWith(
       'SELECT COUNT(*) AS count FROM "test_items"',
     );
+  });
+});
+
+/**
+ * A double for the client `withTransaction` hands out. The brand is written by
+ * hand here, which `IN_TRANSACTION` says is the intended way to produce one
+ * outside the transaction module: visible, deliberate, and greppable.
+ */
+const txQuery = jest.fn();
+const txQueryOne = jest.fn();
+const txQueryCount = jest.fn();
+const tx: TransactionClient = {
+  [IN_TRANSACTION]: true,
+  query: txQuery,
+  queryOne: txQueryOne,
+  queryCount: txQueryCount,
+};
+
+/** Exposes the protected locking helper for direct assertions. */
+class LockingRepository extends TestRepository {
+  lockAdminsLike(client: TransactionClient, options?: RowLockOptions): Promise<TestRow[]> {
+    return this.lockWhereArrayContains(client, 'name', ['admin'], options);
+  }
+}
+
+const lockingRepo = new LockingRepository();
+
+beforeEach(() => {
+  txQuery.mockReset();
+  txQueryOne.mockReset();
+  txQueryCount.mockReset();
+});
+
+describe('BaseRepository executor routing', () => {
+  /**
+   * The point of the optional executor: a repository call inside a transaction
+   * has to land on that transaction's connection. Sent to the pool it would run
+   * outside the caller's transaction, see none of its uncommitted rows, and
+   * survive its rollback.
+   */
+  it('sends the statement to the transaction when one is passed', async () => {
+    txQueryOne.mockResolvedValue(null);
+
+    await repo.findById('1', tx);
+
+    expect(txQueryOne).toHaveBeenCalledTimes(1);
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the pool when no transaction is passed', async () => {
+    mockQueryOne.mockResolvedValue(null);
+
+    await repo.findById('1');
+
+    expect(mockQueryOne).toHaveBeenCalledTimes(1);
+    expect(txQueryOne).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['findAll', async (client?: TransactionClient) => repo.findAll({}, client), txQuery],
+    ['findOne', async (client?: TransactionClient) => repo.findOne({ id: '1' }, client), txQueryOne],
+    [
+      'findWhere',
+      async (client?: TransactionClient) => repo.findWhere({ id: '1' }, {}, client),
+      txQuery,
+    ],
+    [
+      'create',
+      async (client?: TransactionClient) => repo.create({ name: 'n', value: 1 }, client),
+      txQueryOne,
+    ],
+    [
+      'update',
+      async (client?: TransactionClient) => repo.update('1', { name: 'n' }, client),
+      txQueryOne,
+    ],
+    ['delete', async (client?: TransactionClient) => repo.delete('1', client), txQueryOne],
+    ['count', async (client?: TransactionClient) => repo.count(undefined, client), txQueryCount],
+  ])('%s joins the caller transaction', async (_name, call, expected) => {
+    txQuery.mockResolvedValue([]);
+    txQueryOne.mockResolvedValue({ id: '1' });
+    txQueryCount.mockResolvedValue(0);
+
+    await call(tx);
+
+    expect(expected).toHaveBeenCalledTimes(1);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockQueryOne).not.toHaveBeenCalled();
+    expect(mockQueryCount).not.toHaveBeenCalled();
+  });
+});
+
+describe('BaseRepository.lockById', () => {
+  it('appends FOR UPDATE by default', async () => {
+    txQueryOne.mockResolvedValue(null);
+
+    await repo.lockById(tx, 'row-1');
+
+    expect(txQueryOne).toHaveBeenCalledWith(
+      'SELECT * FROM "test_items" WHERE id = $1 FOR UPDATE',
+      ['row-1'],
+    );
+  });
+
+  it('carries the requested strength and wait policy into the clause', async () => {
+    txQueryOne.mockResolvedValue(null);
+
+    await repo.lockById(tx, 'row-1', { strength: 'no key update', wait: 'nowait' });
+
+    expect(txQueryOne).toHaveBeenCalledWith(
+      'SELECT * FROM "test_items" WHERE id = $1 FOR NO KEY UPDATE NOWAIT',
+      ['row-1'],
+    );
+  });
+
+  it('returns the locked row', async () => {
+    const row: TestRow = {
+      id: 'row-1',
+      name: 'item',
+      value: 1,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+    txQueryOne.mockResolvedValue(row);
+
+    await expect(repo.lockById(tx, 'row-1')).resolves.toBe(row);
+  });
+
+  /**
+   * `null` can only mean "no such row" here, and that is a property of the
+   * types rather than of this assertion: `SingleRowLockOptions` has no
+   * `skip locked`, so a contended row cannot come back as an empty result.
+   */
+  it('returns null for a row that does not exist', async () => {
+    txQueryOne.mockResolvedValue(null);
+    await expect(repo.lockById(tx, 'missing')).resolves.toBeNull();
+  });
+
+  it('never issues its statement on the pool', async () => {
+    txQueryOne.mockResolvedValue(null);
+
+    await repo.lockById(tx, 'row-1');
+
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+});
+
+describe('BaseRepository.lockWhereArrayContains', () => {
+  /**
+   * The ordering is the substance. Two transactions locking the same set in
+   * opposite orders deadlock; ordering by the primary key gives every caller
+   * the same sequence, so they queue instead.
+   */
+  it('locks in primary-key order', async () => {
+    txQuery.mockResolvedValue([]);
+
+    await lockingRepo.lockAdminsLike(tx);
+
+    expect(txQuery).toHaveBeenCalledWith(
+      'SELECT * FROM "test_items" WHERE "name" @> $1 ORDER BY "id" ASC FOR UPDATE',
+      [['admin']],
+    );
+  });
+
+  it('uses containment rather than equality, so a longer list still matches', async () => {
+    txQuery.mockResolvedValue([]);
+
+    await lockingRepo.lockAdminsLike(tx);
+
+    const [sql] = txQuery.mock.calls[0] as [string];
+    expect(sql).toContain('@>');
+    expect(sql).not.toMatch(/"name" = /);
+  });
+
+  it('honours the requested lock strength', async () => {
+    txQuery.mockResolvedValue([]);
+
+    await lockingRepo.lockAdminsLike(tx, { strength: 'no key update' });
+
+    const [sql] = txQuery.mock.calls[0] as [string];
+    expect(sql).toContain('FOR NO KEY UPDATE');
+  });
+
+  it('returns the locked rows', async () => {
+    const rows: TestRow[] = [
+      { id: 'a', name: 'admin', value: 1, created_at: new Date(), updated_at: new Date() },
+    ];
+    txQuery.mockResolvedValue(rows);
+
+    await expect(lockingRepo.lockAdminsLike(tx)).resolves.toBe(rows);
   });
 });

@@ -5,6 +5,10 @@ jest.mock('@/db/query', () => ({
   query: jest.fn(),
   queryOne: (...args: unknown[]) => mockQueryOne(...args),
   queryCount: (...args: unknown[]) => mockQueryCount(...args),
+  // The repository's default executor. Absent from this factory it would be
+  // `undefined`, and every call that did not explicitly pass a transaction
+  // would fail on it — see `poolQueryable` in `@/db/query`.
+  poolQueryable: { query: jest.fn(), queryOne: (...args: unknown[]) => mockQueryOne(...args), queryCount: (...args: unknown[]) => mockQueryCount(...args) },
 }));
 
 import { IdempotencyStoreContentionError } from '@/idempotency/idempotency.errors';

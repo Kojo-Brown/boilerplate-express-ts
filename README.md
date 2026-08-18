@@ -78,6 +78,10 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   `ETag` over a trigger-maintained `version` column, why the check lives in the
   `WHERE` clause rather than in a read before it, and what the `If-Match` parser
   rejects as opposed to what it merely fails to match.
+- [Pessimistic locking](./docs/pessimistic-locking.md) — `SELECT ... FOR UPDATE`
+  with deterministic lock ordering and a deadlock-retry wrapper, the cross-row
+  invariant a version column cannot express, and why a lock timeout below
+  `deadlock_timeout` makes the retry loop unreachable.
 
 ## Authentication
 

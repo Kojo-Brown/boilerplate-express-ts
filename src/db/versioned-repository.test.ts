@@ -6,11 +6,17 @@ jest.mock('@/db/query', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   queryOne: (...args: unknown[]) => mockQueryOne(...args),
   queryCount: (...args: unknown[]) => mockQueryCount(...args),
+  // The repository's default executor. Absent from this factory it would be
+  // `undefined`, and every call that did not explicitly pass a transaction
+  // would fail on it — see `poolQueryable` in `@/db/query`.
+  poolQueryable: { query: (...args: unknown[]) => mockQuery(...args), queryOne: (...args: unknown[]) => mockQueryOne(...args), queryCount: (...args: unknown[]) => mockQueryCount(...args) },
 }));
 
 import { VersionedRepository } from '@/db/versioned-repository';
 import type { VersionedRow } from '@/db/versioned-repository';
 import { ANY_VERSION } from '@/concurrency/concurrency.types';
+import type { TransactionClient } from '@/db/transaction';
+import { IN_TRANSACTION } from '@/db/queryable';
 
 interface DocRow extends VersionedRow {
   id: string;
@@ -262,5 +268,53 @@ describe('VersionedRepository and the inherited unconditional writes', () => {
     const [sql, params] = mockQueryOne.mock.calls[0] as [string, unknown[]];
     expect(sql).not.toContain('"version"');
     expect(params).toEqual(['New', 'doc-1']);
+  });
+});
+
+describe('conditional writes inside a caller transaction', () => {
+  const txQueryOne = jest.fn();
+  const tx: TransactionClient = {
+    [IN_TRANSACTION]: true,
+    query: jest.fn(),
+    queryOne: txQueryOne,
+    queryCount: jest.fn(),
+  };
+
+  beforeEach(() => {
+    txQueryOne.mockReset();
+  });
+
+  /**
+   * The compare-and-swap has to run on the same connection as the lock that was
+   * taken before it. On the pool it would be a separate transaction — outside
+   * the lock, and surviving the rollback that was supposed to undo it.
+   */
+  it('updateWithVersion issues its statement on the transaction, not the pool', async () => {
+    txQueryOne.mockResolvedValue({ id: 'doc-1', version: 2, title: 't', __updated: true });
+
+    const result = await repo.updateWithVersion('doc-1', { title: 't' }, ANY_VERSION, tx);
+
+    expect(result.outcome).toBe('updated');
+    expect(txQueryOne).toHaveBeenCalledTimes(1);
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+
+  it('deleteWithVersion issues its statement on the transaction, not the pool', async () => {
+    txQueryOne.mockResolvedValue({ __deleted: true, version: null });
+
+    const result = await repo.deleteWithVersion('doc-1', ANY_VERSION, tx);
+
+    expect(result.outcome).toBe('deleted');
+    expect(txQueryOne).toHaveBeenCalledTimes(1);
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+
+  it('still uses the pool when no transaction is passed', async () => {
+    mockQueryOne.mockResolvedValue({ __deleted: true, version: null });
+
+    await repo.deleteWithVersion('doc-1', ANY_VERSION);
+
+    expect(mockQueryOne).toHaveBeenCalledTimes(1);
+    expect(txQueryOne).not.toHaveBeenCalled();
   });
 });
