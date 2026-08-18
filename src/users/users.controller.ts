@@ -7,6 +7,9 @@ import type { RouteOperation } from '@/lib/route-decorators';
 import { MemoryCacheStore, withCache, withRetry, withTimeout } from '@/lib/route-decorators';
 import { EVENT_BUS, REQUEST_CONTEXT, USER_REPOSITORY } from '@/container/tokens';
 import { scopeOf } from '@/middleware/container.middleware';
+import { withRetryableTransaction } from '@/db/retry-transaction';
+import type { RetryableTransactionOptions } from '@/db/retry-transaction';
+import { assertAdminRemains, patchRemovesAdminRole } from '@/users/last-admin';
 import type { UserRow } from '@/users/users.repository';
 import type { CreateUserBody, UpdateUserBody, UserIdParams } from '@/users/users.schemas';
 
@@ -30,6 +33,30 @@ const USERS_CACHE_TTL_MS = 5_000;
  * from a cold cache, the same way `resetRateLimiters` exists.
  */
 export const usersCache = new MemoryCacheStore({ maxEntries: 200 });
+
+/**
+ * The transaction settings shared by the two writes that have to hold the
+ * administrator set still while they check it.
+ *
+ * Both numbers are chosen against this route's own deadline rather than in the
+ * abstract. `USER_QUERY_TIMEOUT_MS` gives the operation two seconds, and a
+ * statement blocked on a lock does not notice that deadline — the request gets
+ * its answer while the transaction keeps waiting and keeps its pooled
+ * connection — so `lock_timeout` is what actually bounds the wait, and it is
+ * set below the deadline so a contended write answers 409 rather than being cut
+ * off mid-flight.
+ *
+ * `deadlock_timeout` then has to sit under `lock_timeout`, or the retry loop
+ * around this transaction is unreachable: at the server's default of one
+ * second, a genuine cycle would be reported as `55P03` at 750ms — "somebody
+ * still holds it" — before the detector ever ran, and `withRetryableTransaction`
+ * only retries `40P01`. At 250ms the cycle is detected, one participant is
+ * aborted, and the retry finds the row free with most of the deadline left.
+ */
+const USER_WRITE_TRANSACTION: RetryableTransactionOptions = {
+  lockTimeoutMs: 750,
+  deadlockTimeoutMs: 250,
+};
 
 /**
  * The read stack, outermost first: cache, then retry, then a deadline *per
@@ -133,9 +160,23 @@ const updateUser: RouteOperation<UserRow, UpdateUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
 
-  const result = await scope
-    .resolve(USER_REPOSITORY)
-    .updateWithVersion(req.params.id, req.body, req.precondition);
+  const users = scope.resolve(USER_REPOSITORY);
+
+  // Only the database work is inside the transaction. The cache invalidation
+  // and the event below stay outside it deliberately: `withRetryableTransaction`
+  // may run this callback more than once, and a rolled-back attempt takes its
+  // writes with it but not a published event or a cleared cache. Anything in
+  // here that reaches outside Postgres gets duplicated by the first deadlock.
+  const result = await withRetryableTransaction(async (tx) => {
+    // Skipped unless the patch actually drops the role, so the ordinary update
+    // — an email change, a role list that still contains `admin` — pays for no
+    // lock at all. `no key update` rather than `update`: the row's key is not
+    // changing, so there is no reason to block inserts that reference it.
+    if (patchRemovesAdminRole(req.body)) {
+      assertAdminRemains(await users.lockAdmins(tx, 'no key update'), req.params.id);
+    }
+    return users.updateWithVersion(req.params.id, req.body, req.precondition, tx);
+  }, USER_WRITE_TRANSACTION);
 
   if (result.outcome === 'missing') throw new AppError(404, 'User not found', 'NOT_FOUND');
 
@@ -174,9 +215,24 @@ const removeUser: RouteOperation<void, DeleteUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
 
-  const result = await scope
-    .resolve(USER_REPOSITORY)
-    .deleteWithVersion(req.params.id, req.precondition);
+  const users = scope.resolve(USER_REPOSITORY);
+
+  // The set is locked before the target is read, on every delete, including the
+  // overwhelming majority whose target is not an administrator — and that is
+  // the deliberate part. The cheaper shape is to lock the target first and only
+  // reach for the set when it turns out to hold `admin`, and it reintroduces
+  // the deadlock the ordering rule exists to remove: two deletes of two
+  // different administrators would each hold their own row and then wait for
+  // the other's, which is a cycle. One order for everybody, or no order at all.
+  //
+  // `update` rather than the `no key update` the patch path uses, because a
+  // delete does change the row's key, and a referencing insert allowed to
+  // proceed against a row that is about to disappear is the case that mode
+  // exists to prevent.
+  const result = await withRetryableTransaction(async (tx) => {
+    assertAdminRemains(await users.lockAdmins(tx, 'update'), req.params.id);
+    return users.deleteWithVersion(req.params.id, req.precondition, tx);
+  }, USER_WRITE_TRANSACTION);
 
   if (result.outcome === 'missing') throw new AppError(404, 'User not found', 'NOT_FOUND');
 

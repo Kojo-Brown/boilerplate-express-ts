@@ -39,6 +39,37 @@ const SQLSTATE_RESPONSES: Record<string, { statusCode: number; code: string; mes
     code: 'INVALID_INPUT_SYNTAX',
     message: 'A field was not in the expected format',
   },
+  // The three contention failures. All are 409 rather than 500 because nothing
+  // is broken: the request lost a race, and repeating it is likely to succeed.
+  // A 500 says the opposite, and a client that believes it stops retrying.
+  //
+  // These reach a response only after `withRetryableTransaction` has given up
+  // (or was never used), so by the time one is rendered the retry budget is
+  // spent and the next backoff belongs to the client — which is what a 409
+  // asks for and a 503 would not, since the service is up and serving everyone
+  // who is not contending for this row.
+  //
+  // deadlock_detected — two transactions waited on each other; this one lost.
+  '40P01': {
+    statusCode: 409,
+    code: 'WRITE_CONFLICT',
+    message: 'The request conflicted with a concurrent write; please retry',
+  },
+  // serialization_failure — the transaction could not be serialised.
+  '40001': {
+    statusCode: 409,
+    code: 'WRITE_CONFLICT',
+    message: 'The request conflicted with a concurrent write; please retry',
+  },
+  // lock_not_available — `NOWAIT`, or `lock_timeout` expiring while waiting.
+  // Distinct from the two above on purpose: those mean "you were rolled back",
+  // this one means "somebody is still holding it", and a client that
+  // distinguishes them can back off differently.
+  '55P03': {
+    statusCode: 409,
+    code: 'RESOURCE_LOCKED',
+    message: 'The record is being modified by another request; please retry',
+  },
 };
 
 /**

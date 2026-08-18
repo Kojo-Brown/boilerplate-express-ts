@@ -34,7 +34,40 @@ jest.mock('@/db/query', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   queryOne: (...args: unknown[]) => mockQueryOne(...args),
   queryCount: (...args: unknown[]) => mockQueryCount(...args),
+  // The repository's default executor. Absent from this factory it would be
+  // `undefined`, and every call that did not explicitly pass a transaction
+  // would fail on it — see `poolQueryable` in `@/db/query`.
+  poolQueryable: { query: (...args: unknown[]) => mockQuery(...args), queryOne: (...args: unknown[]) => mockQueryOne(...args), queryCount: (...args: unknown[]) => mockQueryCount(...args) },
 }));
+
+/**
+ * A transaction, for the purposes of these cases, is the mocked query layer.
+ *
+ * The two writes below now run inside `withRetryableTransaction`, which takes a
+ * real pooled connection — something this suite has never had. Rather than
+ * mocking `pg` itself, the callback is handed a client that forwards to the
+ * same mocks every other statement here goes through, so a case can still
+ * queue a response and assert the HTTP answer.
+ *
+ * What that gives up is stated plainly: nothing here exercises BEGIN/COMMIT,
+ * rollback, `SET LOCAL`, or the retry loop. Those have their own suites
+ * (`db/transaction.test.ts`, `db/retry-transaction.test.ts`); these cases are
+ * about what the route answers.
+ */
+jest.mock('@/db/transaction', () => {
+  const { IN_TRANSACTION } = jest.requireActual('@/db/queryable') as {
+    IN_TRANSACTION: symbol;
+  };
+  return {
+    withTransaction: async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn({
+        [IN_TRANSACTION]: true,
+        query: (...args: unknown[]) => mockQuery(...args),
+        queryOne: (...args: unknown[]) => mockQueryOne(...args),
+        queryCount: (...args: unknown[]) => mockQueryCount(...args),
+      }),
+  };
+});
 
 const app = createApp();
 
@@ -409,7 +442,20 @@ describe('DELETE /v1/users/:id (admin only)', () => {
   /** What the conditional `DELETE` statement returns when it removed the row. */
   const deleteHit = { __deleted: true, version: null };
 
+  /**
+   * Every delete now locks the administrator set before it reads the target, so
+   * every case here has to answer that `SELECT ... FOR UPDATE` — what it
+   * returns is what decides whether the invariant lets the delete through.
+   *
+   * Alice is the only seeded administrator and the cases below target Bob, so
+   * the guard finds the target outside the locked set and returns.
+   */
+  const lockedAdmins = (admins: UserRow[] = [SEED_USERS[0]!]): void => {
+    mockQuery.mockResolvedValue(admins);
+  };
+
   it('returns 204 on successful delete', async () => {
+    lockedAdmins();
     mockQueryOne.mockResolvedValue(deleteHit);
     const token = await getAdminToken();
 
@@ -422,6 +468,7 @@ describe('DELETE /v1/users/:id (admin only)', () => {
   });
 
   it('returns 404 when user does not exist', async () => {
+    lockedAdmins();
     mockQueryOne.mockResolvedValue(null);
     const token = await getAdminToken();
 
@@ -435,6 +482,7 @@ describe('DELETE /v1/users/:id (admin only)', () => {
   });
 
   it('returns 412 when the row moved on since the caller read it', async () => {
+    lockedAdmins();
     mockQueryOne.mockResolvedValue({ __deleted: false, version: 9 });
     const token = await getAdminToken();
 
@@ -449,6 +497,7 @@ describe('DELETE /v1/users/:id (admin only)', () => {
   });
 
   it('returns 428 without an If-Match, and deletes nothing', async () => {
+    lockedAdmins();
     const token = await getAdminToken();
 
     const res = await request(app)
@@ -458,6 +507,9 @@ describe('DELETE /v1/users/:id (admin only)', () => {
     expect(res.status).toBe(428);
     expect(res.body.error.code).toBe('PRECONDITION_REQUIRED');
     expect(mockQueryOne).not.toHaveBeenCalled();
+    // Not even the lock: `requireIfMatch` runs ahead of the operation, so a
+    // caller that omitted the header never opens a transaction.
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('returns 403 for non-admin user', async () => {
@@ -478,6 +530,112 @@ describe('DELETE /v1/users/:id (admin only)', () => {
   });
 });
 
+/**
+ * The invariant that needs a lock rather than a version check, exercised
+ * through the wire on both writes that can violate it.
+ *
+ * Optimistic concurrency cannot reach this one. Two requests demoting two
+ * different administrators leave each other's rows alone, so both preconditions
+ * hold and both writes are individually correct — what they produce together is
+ * a system with no administrator. The rule is over a set, and the only way to
+ * check a set is to hold it still.
+ */
+describe('the last administrator cannot be removed', () => {
+  /** The locked administrator set, as `lockAdmins` returns it. */
+  const onlyAlice = [SEED_USERS[0]!];
+  const aliceAndCarol = [SEED_USERS[0]!, { ...SEED_USERS[0]!, id: 'user-uuid-3' }];
+
+  it('refuses a PUT that drops the last admin role, with 409 LAST_ADMIN', async () => {
+    mockQuery.mockResolvedValue(onlyAlice);
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"3"')
+      .send({ roles: ['user'] });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('LAST_ADMIN');
+    // The write never ran: the guard threw before the conditional UPDATE.
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+
+  it('allows the same PUT once a second administrator exists', async () => {
+    mockQuery.mockResolvedValue(aliceAndCarol);
+    mockQueryOne.mockResolvedValue({ ...SEED_USERS[0]!, roles: ['user'], version: 4, __updated: true });
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"3"')
+      .send({ roles: ['user'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.roles).toEqual(['user']);
+  });
+
+  /**
+   * The lock is not free, so it is taken only when the patch could actually
+   * shrink the set — which is what keeps an ordinary email change off this
+   * path entirely.
+   */
+  it('takes no lock for a patch that cannot remove the role', async () => {
+    mockQueryOne.mockResolvedValue({ ...SEED_USERS[0]!, email: 'a@example.com', __updated: true });
+    const token = await getUserToken();
+
+    const res = await request(app)
+      .put('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"3"')
+      .send({ email: 'a@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('takes no lock for a patch that keeps the admin role', async () => {
+    mockQueryOne.mockResolvedValue({ ...SEED_USERS[0]!, __updated: true });
+    const token = await getUserToken();
+
+    await request(app)
+      .put('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '"3"')
+      .send({ roles: ['admin', 'user'] });
+
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('refuses a DELETE of the last administrator, with 409 LAST_ADMIN', async () => {
+    mockQuery.mockResolvedValue(onlyAlice);
+    const token = await getAdminToken();
+
+    const res = await request(app)
+      .delete('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('LAST_ADMIN');
+    expect(mockQueryOne).not.toHaveBeenCalled();
+  });
+
+  it('allows deleting an administrator while another remains', async () => {
+    mockQuery.mockResolvedValue(aliceAndCarol);
+    mockQueryOne.mockResolvedValue({ __deleted: true, version: null });
+    const token = await getAdminToken();
+
+    const res = await request(app)
+      .delete('/v1/users/user-uuid-1')
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-Match', '*');
+
+    expect(res.status).toBe(204);
+  });
+});
+
 describe('domain events reach their subscribers through the app', () => {
   // Unit tests cover the bus and each subscriber; these two go through the real
   // wiring in `app.ts`, which is the part no unit test can vouch for — a
@@ -492,6 +650,7 @@ describe('domain events reach their subscribers through the app', () => {
     const refreshToken = (login.body.data as { refreshToken: string }).refreshToken;
     await expect(tokenStore.has(refreshToken)).resolves.toBe(true);
 
+    mockQuery.mockResolvedValue([SEED_USERS[0]!]);
     mockQueryOne.mockResolvedValue({ __deleted: true, version: null });
     const token = await getAdminToken();
 
@@ -510,6 +669,7 @@ describe('domain events reach their subscribers through the app', () => {
     const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
 
     try {
+      mockQuery.mockResolvedValue([SEED_USERS[0]!]);
       mockQueryOne.mockResolvedValue({ __deleted: true, version: null });
       const token = await getAdminToken();
 

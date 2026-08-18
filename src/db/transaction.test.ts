@@ -6,7 +6,8 @@ jest.mock('@/db/pool', () => ({
   getPool: () => ({ connect: (...args: unknown[]) => mockConnect(...args) }),
 }));
 
-import { withTransaction } from '@/db/transaction';
+import { beginStatement, localSettingStatements, withTransaction } from '@/db/transaction';
+import { IN_TRANSACTION } from '@/db/queryable';
 
 beforeEach(() => {
   mockClientQuery.mockReset();
@@ -173,5 +174,100 @@ describe('withTransaction', () => {
       expect(mockClientQuery).toHaveBeenNthCalledWith(1, 'BEGIN');
       expect(mockClientQuery).toHaveBeenLastCalledWith('COMMIT');
     });
+  });
+});
+
+describe('beginStatement', () => {
+  it('is a bare BEGIN when no isolation level is asked for', () => {
+    expect(beginStatement()).toBe('BEGIN');
+    expect(beginStatement({})).toBe('BEGIN');
+  });
+
+  it.each([
+    ['read committed', 'BEGIN ISOLATION LEVEL READ COMMITTED'],
+    ['repeatable read', 'BEGIN ISOLATION LEVEL REPEATABLE READ'],
+    ['serializable', 'BEGIN ISOLATION LEVEL SERIALIZABLE'],
+  ] as const)('renders %s', (isolationLevel, expected) => {
+    expect(beginStatement({ isolationLevel })).toBe(expected);
+  });
+});
+
+describe('localSettingStatements', () => {
+  it('is empty when neither timeout is given', () => {
+    expect(localSettingStatements()).toEqual([]);
+  });
+
+  it('renders lock_timeout and deadlock_timeout as milliseconds', () => {
+    expect(localSettingStatements({ lockTimeoutMs: 750, deadlockTimeoutMs: 250 })).toEqual([
+      "SET LOCAL lock_timeout = '750ms'",
+      "SET LOCAL deadlock_timeout = '250ms'",
+    ]);
+  });
+
+  /**
+   * `0` is Postgres's "wait forever", which is a real setting and not the same
+   * as declining to set one — so it has to survive rather than be treated as
+   * absent by a falsy check.
+   */
+  it('keeps an explicit 0 rather than treating it as unset', () => {
+    expect(localSettingStatements({ lockTimeoutMs: 0 })).toEqual([
+      "SET LOCAL lock_timeout = '0ms'",
+    ]);
+  });
+
+  it.each([-1, 12.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects %p rather than interpolating it',
+    (lockTimeoutMs) => {
+      expect(() => localSettingStatements({ lockTimeoutMs })).toThrow(RangeError);
+    },
+  );
+});
+
+describe('withTransaction options', () => {
+  it('opens the transaction at the requested isolation level', async () => {
+    await withTransaction(async () => null, { isolationLevel: 'repeatable read' });
+    expect(mockClientQuery).toHaveBeenNthCalledWith(1, 'BEGIN ISOLATION LEVEL REPEATABLE READ');
+  });
+
+  it('applies the timeouts after BEGIN and before the callback runs', async () => {
+    const sqlAtCallback: string[] = [];
+
+    await withTransaction(
+      async () => {
+        sqlAtCallback.push(...mockClientQuery.mock.calls.map((call) => String(call[0])));
+        return null;
+      },
+      { lockTimeoutMs: 750, deadlockTimeoutMs: 250 },
+    );
+
+    expect(sqlAtCallback).toEqual([
+      'BEGIN',
+      "SET LOCAL lock_timeout = '750ms'",
+      "SET LOCAL deadlock_timeout = '250ms'",
+    ]);
+  });
+
+  /**
+   * The check has to happen before `connect()`. Validating after it would throw
+   * past the `finally` that releases the client, so a caller with a bad timeout
+   * would leak one pooled connection per call until the pool was empty.
+   */
+  it('rejects a malformed timeout without taking a connection from the pool', async () => {
+    await expect(withTransaction(async () => null, { lockTimeoutMs: -5 })).rejects.toThrow(
+      RangeError,
+    );
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+});
+
+describe('TransactionClient brand', () => {
+  /**
+   * The brand is what makes `lockById(tx, …)` a compile error when handed the
+   * pool. It is a symbol rather than a marker property so that a plain object
+   * literal cannot satisfy the type by accident.
+   */
+  it('marks the client as being inside a transaction', async () => {
+    const branded = await withTransaction(async (tx) => tx[IN_TRANSACTION]);
+    expect(branded).toBe(true);
   });
 });

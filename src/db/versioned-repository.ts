@@ -1,6 +1,6 @@
 import type { QueryResultRow } from 'pg';
 import { BaseRepository } from '@/db/repository';
-import { queryOne } from '@/db/query';
+import type { Queryable } from '@/db/queryable';
 import type {
   ConditionalDelete,
   ConditionalUpdate,
@@ -83,7 +83,9 @@ export abstract class VersionedRepository<
     id: string,
     data: TUpdate,
     precondition: Precondition,
+    tx?: Queryable,
   ): Promise<ConditionalUpdate<TRow>> {
+    const db = this.executor(tx);
     const immutable = new Set(this.immutableColumns());
     const entries = Object.entries(data).filter(([k]) => !immutable.has(k));
 
@@ -122,7 +124,7 @@ export abstract class VersionedRepository<
       WHERE c."id" = ${idParam} AND NOT EXISTS (SELECT 1 FROM updated)
     `;
 
-    const row = await queryOne<Flagged<TRow>>(sql, params);
+    const row = await db.queryOne<Flagged<TRow>>(sql, params);
 
     if (row === null) return { outcome: 'missing' };
     if (row.__updated) return { outcome: 'updated', row: stripUpdatedFlag(row) };
@@ -136,7 +138,12 @@ export abstract class VersionedRepository<
    * second branch selects only `version`, because there is nothing to return
    * from a successful delete and the conflict case needs one number.
    */
-  async deleteWithVersion(id: string, precondition: Precondition): Promise<ConditionalDelete> {
+  async deleteWithVersion(
+    id: string,
+    precondition: Precondition,
+    tx?: Queryable,
+  ): Promise<ConditionalDelete> {
+    const db = this.executor(tx);
     const params: unknown[] = [id];
     let predicate = '"id" = $1';
 
@@ -155,7 +162,7 @@ export abstract class VersionedRepository<
       WHERE c."id" = $1 AND NOT EXISTS (SELECT 1 FROM deleted)
     `;
 
-    const row = await queryOne<{ __deleted: boolean; version: number | null }>(sql, params);
+    const row = await db.queryOne<{ __deleted: boolean; version: number | null }>(sql, params);
 
     if (row === null) return { outcome: 'missing' };
     if (row.__deleted) return { outcome: 'deleted' };
