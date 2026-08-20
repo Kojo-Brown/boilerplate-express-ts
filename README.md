@@ -82,6 +82,10 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   with deterministic lock ordering and a deadlock-retry wrapper, the cross-row
   invariant a version column cannot express, and why a lock timeout below
   `deadlock_timeout` makes the retry loop unreachable.
+- [Advisory locks](./docs/advisory-locks.md) — distributed mutexes over
+  Postgres advisory locks, why the transaction-scoped family needs no lease or
+  fencing token, and how a session-scoped lock's release is made automatic by
+  destroying the connection when the unlock cannot be confirmed.
 
 ## Authentication
 

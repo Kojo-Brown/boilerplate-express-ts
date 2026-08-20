@@ -385,6 +385,19 @@ describe('PostgresIdempotencyStore.purgeExpired', () => {
     await expect(storeUnderTest().purgeExpired()).resolves.toBe(7);
     expect(String(mockQueryCount.mock.calls[0]?.[0])).toContain('DELETE FROM "idempotency_keys"');
   });
+
+  it('sends the delete to a supplied executor rather than to the pool', async () => {
+    // The scheduled sweep holds a transaction-scoped advisory lock; a delete
+    // that went to the pool would run on another connection, outside it.
+    const executor = { query: jest.fn(), queryOne: jest.fn(), queryCount: jest.fn() };
+    executor.queryCount.mockResolvedValue(2);
+
+    await expect(storeUnderTest().purgeExpired(executor)).resolves.toBe(2);
+    expect(mockQueryCount).not.toHaveBeenCalled();
+    expect(String(executor.queryCount.mock.calls[0]?.[0])).toContain(
+      'DELETE FROM "idempotency_keys"',
+    );
+  });
 });
 
 describe('PostgresIdempotencyStore construction', () => {

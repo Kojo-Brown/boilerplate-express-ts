@@ -36,6 +36,13 @@ const envSchema = z.object({
   // abandoned. Must stay above the slowest guarded route: below it, a merely
   // slow request is taken over and its work runs twice.
   IDEMPOTENCY_LEASE_SECONDS: z.coerce.number().int().positive().default(60),
+  // How often each replica reaches for the purge lock. Only one wins per tick,
+  // so this is a per-service sweep interval rather than a per-replica one, and
+  // it does not need lowering as replicas are added. An hour is far below the
+  // default 24h retention, which is what keeps the table's steady-state size
+  // proportional to a day of traffic rather than to uptime. `0` disables the
+  // in-process job — the deployment that wants an external cron instead.
+  IDEMPOTENCY_PURGE_INTERVAL_SECONDS: z.coerce.number().int().nonnegative().default(3600),
 });
 
 const parsed = envSchema.safeParse(process.env);

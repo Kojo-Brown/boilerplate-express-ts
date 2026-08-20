@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { QueryResultRow } from 'pg';
-import { queryCount, queryOne } from '@/db/query';
+import { poolQueryable, queryOne } from '@/db/query';
+import type { Queryable } from '@/db/queryable';
 import { IdempotencyStoreContentionError } from '@/idempotency/idempotency.errors';
 import type {
   ClaimRequest,
@@ -259,8 +260,8 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
     return released !== null;
   }
 
-  async purgeExpired(): Promise<number> {
-    return queryCount(PURGE_SQL);
+  async purgeExpired(executor: Queryable = poolQueryable): Promise<number> {
+    return executor.queryCount(PURGE_SQL);
   }
 }
 
