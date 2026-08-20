@@ -1,3 +1,5 @@
+import type { Queryable } from '@/db/queryable';
+
 /**
  * The two states a key can be in. `in_progress` is a claim: someone is running
  * the request right now. `completed` is a recorded response waiting to be
@@ -104,6 +106,13 @@ export interface IdempotencyStore {
    * Records are not read after `expires_at` — `claim` treats an expired row as
    * absent — so this is housekeeping for the table's size, not for
    * correctness, and is meant to be run on a schedule rather than per request.
+   *
+   * Takes the optional executor every database-backed method in this codebase
+   * takes, for the reason `Queryable` gives: the scheduled caller runs this
+   * under an advisory lock held by an open transaction, and a statement sent to
+   * the pool instead would land on a different connection — outside that
+   * transaction, and therefore outside the lock that was supposed to be
+   * guarding it. Stores that are not backed by the database ignore it.
    */
-  purgeExpired(): Promise<number>;
+  purgeExpired(executor?: Queryable): Promise<number>;
 }

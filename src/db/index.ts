@@ -21,6 +21,18 @@ export type {
   SingleRowLockOptions,
 } from '@/db/locking';
 export {
+  advisoryLockKey,
+  formatAdvisoryLockKey,
+  tryAdvisoryXactLock,
+  withAdvisorySessionLock,
+  withAdvisoryXactLock,
+} from '@/db/advisory-lock';
+export type {
+  AdvisoryLockKey,
+  AdvisoryLockResult,
+  AdvisorySessionLockOptions,
+} from '@/db/advisory-lock';
+export {
   withRetryableTransaction,
   isContentionError,
   sqlStateOf,

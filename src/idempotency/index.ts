@@ -28,6 +28,19 @@ export {
 export type { PostgresIdempotencyStoreOptions } from '@/idempotency/postgres.store';
 export { PostgresIdempotencyStore } from '@/idempotency/postgres.store';
 
+export type {
+  IdempotencyPurgeJob,
+  IdempotencyPurgeJobOptions,
+  IdempotencyPurgeOutcome,
+  RunIdempotencyPurgeOptions,
+} from '@/idempotency/purge-job';
+export {
+  ADVISORY_LOCK_NAMESPACE,
+  IDEMPOTENCY_PURGE_LOCK,
+  runIdempotencyPurge,
+  startIdempotencyPurgeJob,
+} from '@/idempotency/purge-job';
+
 export type { IdempotencyOptions } from '@/idempotency/idempotency.middleware';
 export {
   defaultIsReplayable,
