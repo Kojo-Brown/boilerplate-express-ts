@@ -2,6 +2,10 @@ import type { Request, Response, NextFunction } from 'express';
 import { getStorageProvider } from '@/upload/storage';
 import { AppError } from '@/lib/errors';
 import { sendOk, sendCreated } from '@/lib/response';
+import { env } from '@/config/env';
+import { CPU_WORKER_POOL } from '@/container/tokens';
+import { scopeOf } from '@/middleware/container.middleware';
+import { computeChecksum } from '@/upload/upload.checksum';
 import type { PresignBody, PresignData, UploadData } from '@/upload/upload.types';
 
 export const uploadController = {
@@ -37,6 +41,21 @@ export const uploadController = {
       }
 
       const { buffer, mimetype, originalname, size } = req.file;
+
+      // Before the store, not after: the digest describes the bytes this
+      // service accepted, and computing it from anything other than the exact
+      // buffer that was handed to the provider would let the two disagree
+      // without anything noticing.
+      //
+      // Resolved per request for the same reason the storage provider is —
+      // and it costs nothing when the file is small, because the pool spawns
+      // threads lazily and `computeChecksum` does not ask it for one below the
+      // offload threshold.
+      const checksum = await computeChecksum(buffer, {
+        pool: scopeOf(req).resolve(CPU_WORKER_POOL),
+        offloadMinBytes: env.WORKER_POOL_OFFLOAD_MIN_BYTES,
+      });
+
       const result = await getStorageProvider().put(buffer, originalname, mimetype);
 
       const data: UploadData = {
@@ -44,6 +63,7 @@ export const uploadController = {
         url: result.url,
         size,
         contentType: mimetype,
+        checksum: { algorithm: checksum.algorithm, hex: checksum.hex },
       };
 
       sendCreated(res, data);

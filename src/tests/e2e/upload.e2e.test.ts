@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '@/app';
 import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
@@ -75,6 +76,33 @@ describe('Multer errors are translated by the global handler', () => {
 
     expect(res.status).toBe(201);
     expect(res.body.data).toMatchObject({ key: 'uploads/fake.png' });
+  });
+
+  /**
+   * The digest is of the bytes that were stored, and it is computed on the
+   * request path — so this asserts the wiring end to end, not just that the
+   * field is present.
+   *
+   * This payload is well under `WORKER_POOL_OFFLOAD_MIN_BYTES`, so it is hashed
+   * inline and no thread is started. That is deliberate: an e2e suite that
+   * spawned OS threads per upload would be paying ~300ms a case for a code path
+   * `worker-pool.integration.test.ts` already covers directly, and would leave
+   * threads to be torn down by whatever ran last.
+   */
+  it('returns a checksum of exactly the bytes that were uploaded', async () => {
+    const token = await getToken();
+    const content = Buffer.from('fake-png-bytes');
+
+    const res = await request(app)
+      .post('/v1/uploads')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', content, { filename: 'a.png', contentType: 'image/png' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.checksum).toEqual({
+      algorithm: 'sha256',
+      hex: createHash('sha256').update(content).digest('hex'),
+    });
   });
 
   it('returns 401 without a token', async () => {

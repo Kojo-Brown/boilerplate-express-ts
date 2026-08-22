@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { AppError } from '@/lib/errors';
+import { createContainer } from '@/lib/container';
+import { CPU_WORKER_POOL } from '@/container/tokens';
+import type { CpuTasks } from '@/workers/cpu.tasks';
+import type { WorkerPool } from '@/workers/worker-pool';
 import type { StorageProvider } from '@/upload/storage';
 
 // The controller resolves its backend from the registry, so that is what gets
@@ -33,6 +38,29 @@ function makeRes(): Response {
 
 function makeNext(): jest.MockedFunction<NextFunction> {
   return jest.fn() as jest.MockedFunction<NextFunction>;
+}
+
+/**
+ * The controller resolves the CPU pool from the request scope, so these cases
+ * need one — the same dependency `users.controller` takes, and the same way.
+ *
+ * `mockPut`'s fixture is 15 bytes, far below `WORKER_POOL_OFFLOAD_MIN_BYTES`,
+ * so the checksum is computed inline and `run` is never reached. Registering a
+ * pool that would throw if called is therefore an assertion in itself: these
+ * cases must not be starting threads.
+ */
+const unusablePool = {
+  run: () => {
+    throw new Error('a controller unit test must not dispatch a worker task');
+  },
+} as unknown as WorkerPool<CpuTasks>;
+
+function makeReq(overrides: Partial<Request> = {}): Request {
+  const scope = createContainer({ name: 'upload-test' })
+    .registerValue(CPU_WORKER_POOL, unusablePool)
+    .createScope('request:upload-test');
+
+  return { scope, ...overrides } as Request;
 }
 
 beforeEach(() => {
@@ -108,7 +136,7 @@ describe('uploadController.upload', () => {
       url: 'https://test-bucket.s3.us-east-1.amazonaws.com/uploads/uuid-123.png',
     });
 
-    const req = { file: mockFile } as Request;
+    const req = makeReq({ file: mockFile });
     const res = makeRes();
     const next = makeNext();
 
@@ -126,6 +154,10 @@ describe('uploadController.upload', () => {
         url: 'https://test-bucket.s3.us-east-1.amazonaws.com/uploads/uuid-123.png',
         size: 15,
         contentType: 'image/png',
+        checksum: {
+          algorithm: 'sha256',
+          hex: createHash('sha256').update(mockFile.buffer).digest('hex'),
+        },
       },
       meta: null,
       error: null,
@@ -134,7 +166,7 @@ describe('uploadController.upload', () => {
   });
 
   it('calls next with AppError(400) when req.file is absent', async () => {
-    const req = { file: undefined } as Request;
+    const req = makeReq({ file: undefined });
     const res = makeRes();
     const next = makeNext();
 
@@ -151,7 +183,7 @@ describe('uploadController.upload', () => {
     const storageError = new Error('write failed');
     mockPut.mockRejectedValue(storageError);
 
-    const req = { file: mockFile } as Request;
+    const req = makeReq({ file: mockFile });
     const res = makeRes();
     const next = makeNext();
 

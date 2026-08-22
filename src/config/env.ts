@@ -43,6 +43,31 @@ const envSchema = z.object({
   // proportional to a day of traffic rather than to uptime. `0` disables the
   // in-process job — the deployment that wants an external cron instead.
   IDEMPOTENCY_PURGE_INTERVAL_SECONDS: z.coerce.number().int().nonnegative().default(3600),
+  // Threads in the CPU pool. `0` means "one per available core, minus the
+  // event loop's" — see `defaultPoolSize`. It is the default because the right
+  // number is a property of the machine, not of the deployment, and a constant
+  // checked into a repository is wrong on every machine that is not the one it
+  // was written on. Set it explicitly to pin a value.
+  WORKER_POOL_SIZE: z.coerce.number().int().nonnegative().default(0),
+  // How many tasks may wait for a thread before the pool answers 503. The
+  // bound is a *latency* budget rather than a memory one: with N threads and a
+  // task taking T, the last task in a full queue waits about
+  // `depth / N * T`, so at 4 threads and ~50ms per digest a depth of 64 is
+  // roughly 800ms of queueing before a client is shed instead of stalled.
+  WORKER_POOL_MAX_QUEUE_DEPTH: z.coerce.number().int().nonnegative().default(64),
+  // Backstop for a task that will not finish. Enforcing it costs a thread —
+  // synchronous work cannot be cancelled, so the pool destroys and respawns —
+  // which is why it is set well above any legitimate task rather than being
+  // used as a routine deadline.
+  WORKER_POOL_TASK_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  // The `Retry-After` advertised when the queue is full.
+  WORKER_POOL_RETRY_AFTER_SECONDS: z.coerce.number().int().positive().default(1),
+  // Payloads at or above this size are hashed on a thread; smaller ones are
+  // hashed inline. Below roughly this size the message round trip and the
+  // structured-clone copy cost more than the hashing they avoid, so offloading
+  // would make small uploads slower to protect an event loop that was never
+  // going to stall for 40µs. Measured against `digest`, which runs at ~1–2 GB/s.
+  WORKER_POOL_OFFLOAD_MIN_BYTES: z.coerce.number().int().positive().default(65_536),
 });
 
 const parsed = envSchema.safeParse(process.env);
