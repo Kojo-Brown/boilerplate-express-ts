@@ -86,6 +86,10 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   Postgres advisory locks, why the transaction-scoped family needs no lease or
   fencing token, and how a session-scoped lock's release is made automatic by
   destroying the connection when the unlock cannot be confirmed.
+- [Worker thread pool](./docs/worker-pool.md) — CPU-bound work off the event
+  loop with a bounded queue that sheds rather than grows, why a task timeout has
+  to destroy the thread, and how the worker entry point is found under
+  `tsc`, `tsx` and jest alike.
 
 ## Authentication
 

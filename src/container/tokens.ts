@@ -5,6 +5,8 @@ import type { RequestContext } from '@/container/request-context';
 import type { DomainEventBus } from '@/events';
 import type { IdempotencyStore } from '@/idempotency/idempotency.types';
 import type { UserRepository } from '@/users/users.repository';
+import type { CpuTasks } from '@/workers/cpu.tasks';
+import type { WorkerPool } from '@/workers/worker-pool';
 
 /**
  * Every token this service resolves, in one file.
@@ -44,3 +46,21 @@ export const EVENT_BUS: InjectionToken<DomainEventBus> =
  */
 export const IDEMPOTENCY_STORE: InjectionToken<IdempotencyStore> =
   createToken<IdempotencyStore>('IdempotencyStore');
+
+/**
+ * The thread pool CPU-bound work runs on.
+ *
+ * A singleton because threads are a process-wide resource — a pool per request
+ * would spawn and destroy OS threads per request, which costs more than the
+ * work it was meant to move off the loop — and resolved through the container
+ * rather than imported as a module-level instance so that its `drain()` is
+ * reached by `dispose()` instead of by every caller remembering to.
+ *
+ * Typed as the class rather than an interface, because it is generic over its
+ * task map and that is the whole point: `pool.run('digest', payload)` is
+ * checked against `CpuTasks`, so a renamed task or a changed payload is a
+ * compile error at the call site instead of an `UNKNOWN_WORKER_TASK` in
+ * production.
+ */
+export const CPU_WORKER_POOL: InjectionToken<WorkerPool<CpuTasks>> =
+  createToken<WorkerPool<CpuTasks>>('WorkerPool<CpuTasks>');

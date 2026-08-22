@@ -29,4 +29,15 @@ export interface UploadData {
   url: string;
   size: number;
   contentType: string;
+  /**
+   * Digest of the bytes that were stored, so a client can verify the transfer
+   * without reading the object back.
+   *
+   * Computed on a worker thread once the payload is large enough to be worth
+   * one — see `upload.checksum.ts`.
+   */
+  checksum: {
+    algorithm: string;
+    hex: string;
+  };
 }

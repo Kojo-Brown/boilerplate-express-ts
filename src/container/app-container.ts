@@ -1,6 +1,7 @@
 import type { Container } from '@/lib/container';
 import { createContainer } from '@/lib/container';
 import {
+  CPU_WORKER_POOL,
   EVENT_BUS,
   IDEMPOTENCY_STORE,
   REQUEST,
@@ -12,6 +13,7 @@ import { env } from '@/config/env';
 import { domainEventBus } from '@/events';
 import { PostgresIdempotencyStore } from '@/idempotency';
 import { UserRepository } from '@/users/users.repository';
+import { createCpuWorkerPool } from '@/workers/cpu-pool';
 
 /**
  * The composition root: the only file that knows what fills each token.
@@ -56,6 +58,24 @@ export function registerAppDependencies(container: Container): Container {
             leaseMs: env.IDEMPOTENCY_LEASE_SECONDS * 1000,
           }),
       )
+
+      /**
+       * Threads, so it is a singleton — and the first registration here that
+       * owns an OS resource, so it is the first with a `dispose`.
+       *
+       * `drain()` rather than `terminate()`: disposal happens at shutdown, and
+       * a queued task is a request whose client is still waiting. Discarding
+       * it would turn every in-flight upload on a replaced instance into a 503
+       * during exactly the rolling deploy that was supposed to be invisible.
+       *
+       * Constructing the pool is free — `WorkerPool` spawns threads lazily on
+       * the first task — so resolving this token on a request that turns out
+       * to be below the offload threshold costs nothing, and a deployment that
+       * never uploads anything large never starts a thread.
+       */
+      .registerSingleton(CPU_WORKER_POOL, () => createCpuWorkerPool(), {
+        dispose: (pool) => pool.drain(),
+      })
 
       /** Seeded by `containerMiddleware`; see `REQUEST`. */
       .registerSeed(REQUEST)
