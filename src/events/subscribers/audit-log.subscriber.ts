@@ -1,4 +1,4 @@
-import type { DomainEvent, Unsubscribe } from '@/events/event-bus';
+import type { DomainEvent, SubscriberView, Unsubscribe } from '@/events/event-bus';
 import type { DomainEventBus, DomainEventName, DomainEventPayloads } from '@/events/domain-events';
 
 /**
@@ -41,9 +41,18 @@ export const consoleAuditSink: AuditSink = {
   },
 };
 
-/** What a given event contributes to its audit line, or `null` to skip it. */
+/**
+ * What a given event contributes to its audit line, or `null` to skip it.
+ *
+ * The payload is the subscriber's read-only view, matching what the bus hands
+ * over. Spelling it out here rather than leaving it as `DomainEventPayloads[K]`
+ * matters because TypeScript ignores `readonly` property modifiers when it
+ * checks assignability: a handler annotated with the mutable payload type is
+ * accepted by `bus.on` without complaint, and then a descriptor that edits its
+ * payload compiles. The annotation is the thing that closes that, not the bus.
+ */
 type AuditDescriptor<K extends DomainEventName> = (
-  payload: DomainEventPayloads[K],
+  payload: SubscriberView<DomainEventPayloads[K]>,
 ) => Pick<AuditEntry, 'subject' | 'actorId'> & { attributes?: Record<string, unknown> };
 
 /**
@@ -120,19 +129,24 @@ export function registerAuditLogSubscriber(
     // the sense that matters: a descriptor only ever sees its own event.
     const describe = AUDIT_DESCRIPTORS[name] as AuditDescriptor<DomainEventName>;
 
-    return bus.on(name, async (event: DomainEvent<DomainEventName, DomainEventPayloads[DomainEventName]>) => {
-      const { subject, actorId, attributes } = describe(event.payload);
+    return bus.on(
+      name,
+      async (
+        event: DomainEvent<DomainEventName, SubscriberView<DomainEventPayloads[DomainEventName]>>,
+      ) => {
+        const { subject, actorId, attributes } = describe(event.payload);
 
-      await sink.record({
-        eventId: event.id,
-        eventName: event.name,
-        occurredAt: event.occurredAt.toISOString(),
-        correlationId: event.correlationId,
-        actorId,
-        subject,
-        attributes: attributes ?? {},
-      });
-    });
+        await sink.record({
+          eventId: event.id,
+          eventName: event.name,
+          occurredAt: event.occurredAt.toISOString(),
+          correlationId: event.correlationId,
+          actorId,
+          subject,
+          attributes: attributes ?? {},
+        });
+      },
+    );
   });
 
   return () => {

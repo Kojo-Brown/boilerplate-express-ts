@@ -6,6 +6,7 @@ import type {
   ConditionalUpdate,
   Precondition,
 } from '@/concurrency/concurrency.types';
+import { omit } from '@/lib/immutable';
 
 /** What a table needs before a conditional write can be written against it. */
 export interface VersionedRow extends QueryResultRow {
@@ -186,7 +187,9 @@ export abstract class VersionedRepository<
  * type parameter, so TypeScript cannot see it.
  */
 function stripUpdatedFlag<TRow extends QueryResultRow>(row: Flagged<TRow>): TRow {
-  const rest: Record<string, unknown> = { ...row };
-  delete rest['__updated'];
-  return rest as unknown as TRow;
+  // `omit` rather than `{ ...row }` followed by `delete`: the spread-and-delete
+  // form has to widen the copy to a `Record` before `delete` is legal, and the
+  // key being removed then goes unchecked against the row type. Here
+  // `'__updated'` is checked against `Flagged<TRow>`.
+  return omit(row, '__updated') as unknown as TRow;
 }

@@ -130,3 +130,50 @@ describe('MemoryCacheStore', () => {
     await expect(store.get('k')).resolves.toBeUndefined();
   });
 });
+
+describe('MemoryCacheStore — the shared reference', () => {
+  it('stores the value itself, so every hit is the same object', async () => {
+    const store = new MemoryCacheStore();
+    const rows = [{ id: 'a' }];
+    await store.set('k', rows, 1_000);
+
+    const first = await store.get<{ id: string }[]>('k');
+    const second = await store.get<{ id: string }[]>('k');
+
+    // Not an implementation detail: it is the reason for the freeze below.
+    expect(first?.value).toBe(rows);
+    expect(second?.value).toBe(rows);
+  });
+
+  it('freezes what it stores, outside production', async () => {
+    const store = new MemoryCacheStore();
+    const rows = [{ id: 'a' }];
+    await store.set('k', rows, 1_000);
+
+    const hit = await store.get<{ id: string }[]>('k');
+
+    // No cast and no `@ts-expect-error`: the type says `{ id: string }[]` and
+    // always did. That is exactly the hole — the caller who edits a cached row
+    // is writing code the compiler is happy with, and the entry stays edited
+    // until the TTL runs out. The freeze turns it into a throw at the line that
+    // did it, in the test that did it.
+    expect(() => {
+      hit!.value[0]!.id = 'b';
+    }).toThrow(TypeError);
+
+    expect(rows[0]?.id).toBe('a');
+  });
+
+  it('freezes the writer’s own object, not a copy of it', async () => {
+    const store = new MemoryCacheStore();
+    const rows = [{ id: 'a' }];
+    await store.set('k', rows, 1_000);
+
+    // The first request is the one holding the object it just cached, so it is
+    // also the one most likely to mutate it. Deferring the freeze until a
+    // second request could observe the damage would report the bug against
+    // whichever test happened to read the entry next.
+    expect(Object.isFrozen(rows)).toBe(true);
+    expect(Object.isFrozen(rows[0])).toBe(true);
+  });
+});

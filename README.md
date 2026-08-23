@@ -90,6 +90,10 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   loop with a bounded queue that sheds rather than grows, why a task timeout has
   to destroy the thread, and how the worker entry point is found under
   `tsc`, `tsx` and jest alike.
+- [Immutability](./docs/immutability.md) — `DeepReadonly`, a deep freeze outside
+  production, and the pure update helpers that are left once the object spread
+  has covered the rest; what `Object.freeze` cannot do to a `Date`, a `Map` or a
+  `Buffer`, and why the cache and the event bus are where it is wired.
 
 ## Authentication
 
