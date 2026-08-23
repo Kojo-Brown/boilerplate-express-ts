@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import type { DeepReadonly } from '@/lib/immutable';
+import { freezeInDev } from '@/lib/immutable';
 
 /**
  * The shape a bus is parameterised by: event name → payload type.
@@ -60,12 +62,36 @@ export type HandlerErrorReporter = (
   context: { readonly handlerName: string },
 ) => void;
 
+/**
+ * What a subscriber is handed, given what a publisher passed in.
+ *
+ * The asymmetry is the whole point: `publish` takes `TEvents[K]`, `on` delivers
+ * `DeepReadonly<TEvents[K]>`. One payload object is fanned out to every
+ * subscriber — they run concurrently, on the same reference — so a handler that
+ * "normalises" the payload before using it is editing what the handlers after
+ * it will see. Nothing about that failure is local: the audit line comes out
+ * wrong because the revocation subscriber lowercased an id, and the two files
+ * share no import.
+ *
+ * A defensive copy per subscriber would also fix it, and costs a structured
+ * clone per delivery to protect against a mutation that should not compile in
+ * the first place. This is the same trade `deepFreeze` describes — the type
+ * refuses it, and `publish` freezes in dev so the refusal is not merely advice.
+ */
+export type SubscriberView<TPayload> = DeepReadonly<TPayload>;
+
 export interface EventBus<TEvents extends EventPayloadMap> {
   /** Subscribes until the returned function is called. */
-  on<K extends keyof TEvents & string>(name: K, handler: EventHandler<K, TEvents[K]>): Unsubscribe;
+  on<K extends keyof TEvents & string>(
+    name: K,
+    handler: EventHandler<K, SubscriberView<TEvents[K]>>,
+  ): Unsubscribe;
 
   /** Subscribes for exactly one delivery. */
-  once<K extends keyof TEvents & string>(name: K, handler: EventHandler<K, TEvents[K]>): Unsubscribe;
+  once<K extends keyof TEvents & string>(
+    name: K,
+    handler: EventHandler<K, SubscriberView<TEvents[K]>>,
+  ): Unsubscribe;
 
   /**
    * Announces that something happened, and resolves once every handler has
@@ -236,13 +262,18 @@ export function createEventBus<TEvents extends EventPayloadMap>(
 
   function subscribe<K extends keyof TEvents & string>(
     name: K,
-    handler: EventHandler<K, TEvents[K]>,
+    handler: EventHandler<K, SubscriberView<TEvents[K]>>,
     mode: 'on' | 'once',
   ): Unsubscribe {
     assertUsableName(name);
 
     const wrapper: ListenerWrapper = (event, collect) => {
-      collect(runIsolated(handler, event as DomainEvent<K, TEvents[K]>));
+      // `ListenerWrapper` is deliberately untyped in its payload — one emitter
+      // carries every event this bus knows — so the correlation between `name`
+      // and the payload shape is re-asserted here. It is established at the only
+      // place that can establish it: `publish` builds the envelope from the same
+      // `K`, three functions below.
+      collect(runIsolated(handler, event as DomainEvent<K, SubscriberView<TEvents[K]>>));
     };
 
     emitter[mode](name, wrapper);
@@ -264,13 +295,23 @@ export function createEventBus<TEvents extends EventPayloadMap>(
     async publish(name, payload, publishOptions = {}) {
       assertUsableName(name);
 
-      const event: DomainEvent<typeof name, typeof payload> = {
+      // Frozen in dev and test, envelope and payload together. The envelope's
+      // fields are already `readonly`, but a subscriber reaching it through
+      // `DomainEvent` — the erased form the error reporter and the wrapper above
+      // both use — has a mutable-enough view, and `payload` is shared by every
+      // subscriber by construction.
+      //
+      // The publisher's own object is frozen too, since this is the same
+      // reference. That is a real constraint and the right one: a payload that
+      // the caller goes on to edit after publishing was never a statement of
+      // fact about a moment, which is the only thing an event can be.
+      const event: DomainEvent<typeof name, typeof payload> = freezeInDev({
         id: newId(),
         name,
         occurredAt: now(),
         correlationId: publishOptions.correlationId ?? null,
         payload,
-      };
+      });
 
       const settled: Promise<void>[] = [];
       emitter.emit(name, event, (promise: Promise<void>) => settled.push(promise));

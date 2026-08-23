@@ -4,7 +4,15 @@
     "module": "commonjs",
     "moduleResolution": "node",
     "ignoreDeprecations": "6.0",
-    "lib": ["ES2022"],
+    // `target` stays ES2022 — that is a syntax decision, and nothing here needs
+    // ES2023 syntax. `lib` is a claim about what the runtime provides, and
+    // `engines` already requires Node ^22.12 || ^24, both of which implement the
+    // ES2023 copying array methods (`with`, `toSorted`, `toSpliced`,
+    // `toReversed`). Leaving `lib` at ES2022 hides them from a codebase that now
+    // hands out frozen arrays, where a copying method is the correct answer and
+    // a hand-written helper is the one people reach for when the compiler says
+    // the method does not exist.
+    "lib": ["ES2023"],
     "types": ["node", "jest"],
     "outDir": "dist",
     "rootDir": "src",

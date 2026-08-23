@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { STORAGE_DRIVERS } from '@/upload/storage/storage.types';
+// The leaf module, not `@/lib/immutable`: the barrel also exports `freezeInDev`,
+// which reads `env` to decide whether it is enabled, and importing it here would
+// make configuration and the freeze helpers a cycle.
+import { deepFreeze } from '@/lib/immutable/freeze';
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -77,4 +81,21 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+/**
+ * The validated configuration, frozen — in every environment, not just in dev.
+ *
+ * This is the case `freezeInDev` is wrong for. It is one object, walked once at
+ * boot, so there is no hot path to protect; and the value is imported by
+ * fifteen modules that all treat it as a constant, which is precisely the shape
+ * that gets written to by accident. A test that reaches for
+ * `env.NODE_ENV = 'production'` to exercise a branch is the usual way it
+ * happens: it passes, leaks the change into every later test in the file, and
+ * the failure lands somewhere else. Frozen, that line throws at the assignment.
+ *
+ * `deepFreeze` returns `DeepReadonly<typeof parsed.data>`, so the export's type
+ * carries it too and a write is a compile error before it is a `TypeError`.
+ * Every field here is a primitive today, which makes the deep part free; it
+ * stops being free the first time a nested object is added, and that is exactly
+ * when a shallow `Readonly` would have started lying.
+ */
+export const env = deepFreeze(parsed.data);

@@ -1,3 +1,5 @@
+import { freezeInDev } from '@/lib/immutable';
+
 /**
  * A hit, boxed.
  *
@@ -96,10 +98,32 @@ export class MemoryCacheStore implements CacheStore {
     return Promise.resolve({ value: entry.value as T });
   }
 
+  /**
+   * Stores the value by reference — and freezes it, in dev and test.
+   *
+   * Storing by reference is what separates this from a Redis store, and it is
+   * not an implementation detail a caller can ignore: every later hit returns
+   * the *same object*, so a handler that sorts the array it was given, or a
+   * serialiser that strips a field before responding, has edited the cache. The
+   * next hundred requests are answered from the edited copy and the entry heals
+   * itself at the TTL, which is what makes it so hard to catch — the report is
+   * "the list is sometimes in the wrong order" and the code that reordered it is
+   * three modules away and correct-looking.
+   *
+   * The freeze is here rather than in `withCache` because this is where the
+   * sharing happens. A store that serialises has no such hazard and should not
+   * pay for a walk of the value.
+   *
+   * It also freezes the object the *current* caller is about to return, which
+   * is the point: the first request is the one that mutates, so waiting until a
+   * second request could observe it would report the bug to the wrong test.
+   */
   set<T>(key: string, value: T, ttlMs: number): Promise<void> {
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
       throw new RangeError(`MemoryCacheStore: ttlMs must be a finite positive number, got ${ttlMs}`);
     }
+
+    freezeInDev(value);
 
     this.entries.delete(key);
     this.entries.set(key, { value, expiresAt: this.now() + ttlMs });

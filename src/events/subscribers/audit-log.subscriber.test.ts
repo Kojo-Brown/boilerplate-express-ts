@@ -119,10 +119,20 @@ describe('registerAuditLogSubscriber', () => {
       roles,
       actorId: null,
     });
-    roles.push('admin');
 
     // An audit line that changes after it was written is not an audit line.
-    expect(sink.entries[0]?.attributes['roles']).toEqual(['user']);
+    //
+    // This used to be proved by `roles.push('admin')` after the publish and a
+    // re-read of the entry. That line now throws: `publish` freezes the payload
+    // outside production, so the mutation it was guarding against cannot be
+    // written any more. Non-aliasing is the actual claim, and asserting it by
+    // reference tests it directly rather than through a side effect — while
+    // `isFrozen` pins the freeze that replaced the old mechanism, so a
+    // regression in either one still fails here.
+    const recorded = sink.entries[0]?.attributes['roles'];
+    expect(recorded).toEqual(['user']);
+    expect(recorded).not.toBe(roles);
+    expect(Object.isFrozen(roles)).toBe(true);
   });
 
   it('awaits an async sink before the publish resolves', async () => {

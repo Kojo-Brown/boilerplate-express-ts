@@ -347,3 +347,61 @@ describe('createEventBus — guards', () => {
     }
   });
 });
+
+describe('createEventBus — the shared payload', () => {
+  it('stops one subscriber from editing what the next one sees', async () => {
+    const bus = makeBus();
+
+    let attempt: unknown;
+    bus.on('thing.created', (event) => {
+      try {
+        // The cast is the point: subscribers get `DeepReadonly<TPayload>`, so
+        // this line does not compile without it. What the freeze adds is the
+        // answer for the caller who wrote the cast anyway, or who reached the
+        // bus through an erased `DomainEvent`.
+        (event.payload as { id: string }).id = 'edited';
+      } catch (error) {
+        attempt = error;
+      }
+    });
+
+    const seen: string[] = [];
+    bus.on('thing.created', (event) => {
+      seen.push(event.payload.id);
+    });
+
+    await bus.publish('thing.created', { id: 'thing-1' });
+
+    expect(attempt).toBeInstanceOf(TypeError);
+    expect(seen).toEqual(['thing-1']);
+  });
+
+  it('freezes the envelope as well as the payload', async () => {
+    const bus = makeBus();
+
+    let envelope: DomainEvent<'thing.created', { id: string }> | undefined;
+    bus.on('thing.created', (event) => {
+      envelope = event as DomainEvent<'thing.created', { id: string }>;
+    });
+
+    await bus.publish('thing.created', { id: 'thing-1' });
+
+    expect(Object.isFrozen(envelope)).toBe(true);
+    expect(Object.isFrozen(envelope?.payload)).toBe(true);
+
+    // `occurredAt` is left writable on purpose: `Object.freeze` cannot stop
+    // `setUTCFullYear`, and pretending otherwise is worse than not claiming it.
+    expect(Object.isFrozen(envelope?.occurredAt)).toBe(false);
+  });
+
+  it('freezes the publisher’s object, since that is the one it fanned out', async () => {
+    const bus = makeBus();
+    const payload = { id: 'thing-1' };
+
+    await bus.publish('thing.created', payload);
+
+    // A payload edited after publishing was never a statement about a moment,
+    // which is the only thing an event can be.
+    expect(Object.isFrozen(payload)).toBe(true);
+  });
+});
