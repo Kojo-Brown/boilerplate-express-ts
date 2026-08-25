@@ -4,6 +4,7 @@ import {
   CPU_WORKER_POOL,
   EVENT_BUS,
   IDEMPOTENCY_STORE,
+  OUTBOX,
   REQUEST,
   REQUEST_CONTEXT,
   USER_REPOSITORY,
@@ -12,6 +13,7 @@ import { createRequestContext } from '@/container/request-context';
 import { env } from '@/config/env';
 import { domainEventBus } from '@/events';
 import { PostgresIdempotencyStore } from '@/idempotency';
+import { PostgresOutboxStore } from '@/outbox';
 import { UserRepository } from '@/users/users.repository';
 import { createCpuWorkerPool } from '@/workers/cpu-pool';
 
@@ -41,6 +43,15 @@ export function registerAppDependencies(container: Container): Container {
        * not close it.
        */
       .registerValue(EVENT_BUS, domainEventBus)
+
+      /**
+       * Stateless, like every other store here: it holds a uuid generator and
+       * the SQL, and the state is the table. A singleton so the enqueue a
+       * controller reaches for and the claim the relay reaches for are the same
+       * object, which matters only for the reason all of this does — a test
+       * that substitutes one substitutes both.
+       */
+      .registerSingleton(OUTBOX, () => new PostgresOutboxStore())
 
       /**
        * Stateless like the repository — the state is the table — so one

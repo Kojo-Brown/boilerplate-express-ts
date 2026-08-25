@@ -47,6 +47,29 @@ const envSchema = z.object({
   // proportional to a day of traffic rather than to uptime. `0` disables the
   // in-process job — the deployment that wants an external cron instead.
   IDEMPOTENCY_PURGE_INTERVAL_SECONDS: z.coerce.number().int().nonnegative().default(3600),
+  // How often each replica polls `outbox_messages`. This is the delivery
+  // latency of every event published through the outbox, so it is seconds
+  // rather than minutes. Unlike the purge interval above it is *not* divided
+  // among replicas: `SKIP LOCKED` lets every relay claim a disjoint batch, so
+  // adding a replica adds drain capacity. `0` disables the in-process relay —
+  // for a deployment running it as its own process, which is the shape this
+  // becomes at scale.
+  OUTBOX_RELAY_INTERVAL_SECONDS: z.coerce.number().int().nonnegative().default(5),
+  // Messages claimed per transaction. It is the multiplier on how long that
+  // transaction stays open — worst case `batch * dispatch timeout` — and an
+  // open transaction holds a pooled connection and the cluster's `xmin`
+  // horizon, so this stays small and the poll interval does the throughput.
+  OUTBOX_RELAY_BATCH_SIZE: z.coerce.number().int().positive().default(20),
+  // Deliveries attempted before a message is dead-lettered, counting the
+  // first. With the relay's 500ms base and 60s ceiling, eight attempts spans
+  // roughly four minutes of outage before a message stops being retried and
+  // starts waiting for a human.
+  OUTBOX_RELAY_MAX_ATTEMPTS: z.coerce.number().int().positive().default(8),
+  // Backstop for a dispatcher that never returns. A promise cannot be
+  // cancelled, so this bounds how long the relay *waits* — the dispatch may
+  // still land afterwards, which is one of the ways at-least-once earns its
+  // name. Set well above a healthy dispatch rather than used as a deadline.
+  OUTBOX_DISPATCH_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
   // Threads in the CPU pool. `0` means "one per available core, minus the
   // event loop's" — see `defaultPoolSize`. It is the default because the right
   // number is a property of the machine, not of the deployment, and a constant
