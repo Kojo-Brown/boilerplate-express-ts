@@ -217,6 +217,46 @@ describe('POST /v1/users (admin only)', () => {
     expect(res.body.error).toBeNull();
   });
 
+  it('records user.created in the outbox rather than publishing it in-process', async () => {
+    mockQueryOne.mockResolvedValue(newUser);
+    const token = await getAdminToken();
+
+    await request(app)
+      .post('/v1/users')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Idempotency-Key', 'users-e2e-outbox')
+      .set('x-correlation-id', 'e2e-create-correlation')
+      .send({ email: 'charlie@example.com', roles: ['user'] });
+
+    const enqueued = mockQuery.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO outbox_messages'),
+    );
+
+    expect(enqueued).toBeDefined();
+    const params = enqueued?.[1] as unknown[];
+    expect(params[1]).toBe('user.created');
+    expect(JSON.parse(String(params[2]))).toEqual({
+      userId: 'user-uuid-3',
+      email: 'charlie@example.com',
+      roles: ['user'],
+      actorId: '1',
+    });
+    // The correlation id survives the round trip through the table, which is
+    // what lets the audit line the relay eventually writes be joined back to
+    // this request's access log entry.
+    expect(params[3]).toBe('e2e-create-correlation');
+
+    // On the same client as the insert, and therefore in the same transaction:
+    // this suite hands `withTransaction` a client that forwards to these mocks,
+    // so what it can show is that the enqueue went through the transaction's
+    // executor rather than reaching for the pool. That the transaction is real
+    // is `db/transaction.test.ts`'s claim.
+    const inserted = mockQueryOne.mock.calls.find((call) =>
+      String(call[0]).includes('INSERT INTO "users"'),
+    );
+    expect(inserted).toBeDefined();
+  });
+
   it('returns 422 when email is invalid', async () => {
     const token = await getAdminToken();
 
@@ -825,7 +865,16 @@ describe('read caching on the users routes', () => {
     const afterWrite = await request(app).get('/v1/users').set('Authorization', `Bearer ${token}`);
 
     expect(afterWrite.body.meta).toEqual({ cache: 'miss' });
-    expect(mockQuery).toHaveBeenCalledTimes(2);
+    // The list read, twice: once cold, once after the write dropped the entry.
+    // A bare call count used to say the same thing and no longer can — the
+    // write now enqueues `user.created` into the outbox on the same connection,
+    // so `mockQuery` also sees an INSERT that has nothing to do with caching.
+    // Selecting the reads keeps the assertion on the claim: a cache that was
+    // *not* invalidated leaves this at one.
+    const listReads = mockQuery.mock.calls.filter((call) =>
+      String(call[0]).includes('SELECT * FROM "users"'),
+    );
+    expect(listReads).toHaveLength(2);
   });
 
   it('does not cache a 404, so the row appears as soon as it exists', async () => {

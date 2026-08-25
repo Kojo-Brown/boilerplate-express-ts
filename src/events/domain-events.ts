@@ -63,6 +63,51 @@ export type DomainEventPayloads = {
 
 export type DomainEventName = keyof DomainEventPayloads & string;
 
+/**
+ * The same names again, as values.
+ *
+ * A type cannot be consulted at runtime, and the outbox needs to: a claimed row
+ * carries an `event_name` that some other — possibly older, possibly newer —
+ * deployment wrote, so `DomainEventName` describes what *this* build knows
+ * rather than what is in the table. This is the list that decides whether a
+ * stored name is one of them.
+ *
+ * Kept exhaustive by the assertion below rather than by care.
+ */
+export const DOMAIN_EVENT_NAMES = [
+  'user.created',
+  'user.updated',
+  'user.deleted',
+  'auth.login.succeeded',
+  'auth.session.revoked',
+] as const satisfies readonly DomainEventName[];
+
+/**
+ * A compile error the moment an event is added to `DomainEventPayloads` without
+ * being listed above.
+ *
+ * `satisfies` alone only checks that every listed name is real; it says nothing
+ * about the ones that were forgotten, and a forgotten name is the failure that
+ * matters here — its messages would be dead-lettered as unrecognised by a build
+ * that in fact has subscribers for them.
+ */
+export type MissingDomainEventNames = Exclude<
+  DomainEventName,
+  (typeof DOMAIN_EVENT_NAMES)[number]
+> extends never
+  ? true
+  : ['DOMAIN_EVENT_NAMES is missing', Exclude<DomainEventName, (typeof DOMAIN_EVENT_NAMES)[number]>];
+
+const _allDomainEventNamesListed: MissingDomainEventNames = true;
+void _allDomainEventNamesListed;
+
+const DOMAIN_EVENT_NAME_SET: ReadonlySet<string> = new Set(DOMAIN_EVENT_NAMES);
+
+/** Whether a name read back out of storage is one this build can deliver. */
+export function isDomainEventName(name: string): name is DomainEventName {
+  return DOMAIN_EVENT_NAME_SET.has(name);
+}
+
 export type DomainEventBus = EventBus<DomainEventPayloads>;
 
 /**

@@ -94,6 +94,11 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   production, and the pure update helpers that are left once the object spread
   has covered the rest; what `Object.freeze` cannot do to a `Date`, a `Map` or a
   `Buffer`, and why the cache and the event bus are where it is wired.
+- [Transactional outbox](./docs/outbox.md) — publishing an event in the same
+  transaction as the row it describes, and a relay that drains it with
+  `FOR UPDATE SKIP LOCKED`; what at-least-once obliges a subscriber to do, why a
+  delivered row is deleted rather than marked, and where the delivery boundary
+  actually sits when the dispatcher is an in-process bus.
 
 ## Authentication
 

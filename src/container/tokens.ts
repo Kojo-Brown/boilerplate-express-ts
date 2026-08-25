@@ -4,6 +4,7 @@ import { createToken } from '@/lib/container';
 import type { RequestContext } from '@/container/request-context';
 import type { DomainEventBus } from '@/events';
 import type { IdempotencyStore } from '@/idempotency/idempotency.types';
+import type { DomainOutbox } from '@/outbox';
 import type { UserRepository } from '@/users/users.repository';
 import type { CpuTasks } from '@/workers/cpu.tasks';
 import type { WorkerPool } from '@/workers/worker-pool';
@@ -36,6 +37,19 @@ export const USER_REPOSITORY: InjectionToken<UserRepository> =
 
 export const EVENT_BUS: InjectionToken<DomainEventBus> =
   createToken<DomainEventBus>('DomainEventBus');
+
+/**
+ * Where an event is written so that it cannot be lost.
+ *
+ * Distinct from `EVENT_BUS` rather than replacing it, because the two answer
+ * different questions and a publisher has to pick. The bus is immediate,
+ * in-process and at-most-once: right for a consequence the publisher can afford
+ * to lose. The outbox commits with the write it describes and is delivered by
+ * the relay at-least-once: right for a consequence that must happen even if
+ * this process dies in the next millisecond — and available only where there is
+ * a transaction to join, which is what its `TransactionClient` parameter says.
+ */
+export const OUTBOX: InjectionToken<DomainOutbox> = createToken<DomainOutbox>('DomainOutbox');
 
 /**
  * Where `Idempotency-Key` claims are recorded.

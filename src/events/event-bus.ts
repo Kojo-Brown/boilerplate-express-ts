@@ -53,6 +53,51 @@ export type Unsubscribe = () => void;
 export interface PublishOptions {
   /** Usually `correlationIdOf(req)`. Omitted for events published outside a request. */
   correlationId?: string | undefined;
+
+  /**
+   * The event's identity, when the publisher already has one.
+   *
+   * Left out, `publish` mints a fresh id, which is right for a fact this
+   * process is stating for the first time. It is wrong for a *re*-publish: the
+   * outbox relay may deliver the same stored message more than once, and a new
+   * id each time is the one thing that would make those deliveries
+   * indistinguishable from different events — which takes away the only means
+   * a subscriber has of recognising a duplicate, and hands it a fresh id to
+   * deduplicate on instead. The outbox row's primary key is the event's
+   * identity, so the relay supplies it.
+   */
+  eventId?: string | undefined;
+
+  /**
+   * When the fact happened, for a publisher that is not the one it happened to.
+   *
+   * Same reason as `eventId`, one field over: a message enqueued at 10:00 and
+   * delivered at 10:04 after three failed attempts happened at 10:00, and an
+   * audit line stamped with the delivery time is a record of the relay's
+   * schedule rather than of the event.
+   */
+  occurredAt?: Date | undefined;
+
+  /**
+   * Where *this* publish's handler failures are reported, instead of the bus's
+   * `onHandlerError`.
+   *
+   * Isolation is unchanged — a failing handler still cannot fail the publish or
+   * the handlers beside it — but a publisher that needs to *know* can now find
+   * out, which no amount of awaiting `publish` would tell it.
+   *
+   * It exists for the outbox relay and describes exactly that situation: the
+   * relay deletes a durable row on the strength of a delivery, so "every
+   * subscriber was called" is not the question it is asking. See
+   * `createEventBusDispatcher`. A publisher on a request path wants the
+   * default, because the whole point of publishing rather than calling is that
+   * the request does not depend on the answer.
+   *
+   * It replaces the bus default for this publish rather than running alongside
+   * it: a failure logged by the bus *and* handled by the caller is one incident
+   * reported twice, and the caller is the one that knows what it means.
+   */
+  onHandlerError?: HandlerErrorReporter | undefined;
 }
 
 /** Where a handler failure goes. See `EventBusOptions.onHandlerError`. */
@@ -173,7 +218,11 @@ const RESERVED_EVENT_NAMES: ReadonlySet<string> = new Set([
  * counts and leak warnings keep working — none of which survives snapshotting
  * `emitter.listeners()` and calling them by hand.
  */
-type ListenerWrapper = (event: DomainEvent, collect: (settled: Promise<void>) => void) => void;
+type ListenerWrapper = (
+  event: DomainEvent,
+  collect: (settled: Promise<void>) => void,
+  reportTo: HandlerErrorReporter | undefined,
+) => void;
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -234,9 +283,14 @@ export function createEventBus<TEvents extends EventPayloadMap>(
   }
 
   /** Reporting must not become its own failure. */
-  function report(error: Error, event: DomainEvent, handlerName: string): void {
+  function report(
+    error: Error,
+    event: DomainEvent,
+    handlerName: string,
+    reportTo: HandlerErrorReporter | undefined,
+  ): void {
     try {
-      onHandlerError(error, event, { handlerName });
+      (reportTo ?? onHandlerError)(error, event, { handlerName });
     } catch {
       // A reporter that throws would turn one lost subscriber into a rejected
       // publish, which is the exact coupling this function exists to break.
@@ -252,11 +306,12 @@ export function createEventBus<TEvents extends EventPayloadMap>(
   async function runIsolated<TName extends string, TPayload>(
     handler: EventHandler<TName, TPayload>,
     event: DomainEvent<TName, TPayload>,
+    reportTo: HandlerErrorReporter | undefined,
   ): Promise<void> {
     try {
       await handler(event);
     } catch (err) {
-      report(toError(err), event, handler.name === '' ? '<anonymous>' : handler.name);
+      report(toError(err), event, handler.name === '' ? '<anonymous>' : handler.name, reportTo);
     }
   }
 
@@ -267,13 +322,15 @@ export function createEventBus<TEvents extends EventPayloadMap>(
   ): Unsubscribe {
     assertUsableName(name);
 
-    const wrapper: ListenerWrapper = (event, collect) => {
+    const wrapper: ListenerWrapper = (event, collect, reportTo) => {
       // `ListenerWrapper` is deliberately untyped in its payload — one emitter
       // carries every event this bus knows — so the correlation between `name`
       // and the payload shape is re-asserted here. It is established at the only
       // place that can establish it: `publish` builds the envelope from the same
       // `K`, three functions below.
-      collect(runIsolated(handler, event as DomainEvent<K, SubscriberView<TEvents[K]>>));
+      collect(
+        runIsolated(handler, event as DomainEvent<K, SubscriberView<TEvents[K]>>, reportTo),
+      );
     };
 
     emitter[mode](name, wrapper);
@@ -306,15 +363,20 @@ export function createEventBus<TEvents extends EventPayloadMap>(
       // the caller goes on to edit after publishing was never a statement of
       // fact about a moment, which is the only thing an event can be.
       const event: DomainEvent<typeof name, typeof payload> = freezeInDev({
-        id: newId(),
+        id: publishOptions.eventId ?? newId(),
         name,
-        occurredAt: now(),
+        occurredAt: publishOptions.occurredAt ?? now(),
         correlationId: publishOptions.correlationId ?? null,
         payload,
       });
 
       const settled: Promise<void>[] = [];
-      emitter.emit(name, event, (promise: Promise<void>) => settled.push(promise));
+      emitter.emit(
+        name,
+        event,
+        (promise: Promise<void>) => settled.push(promise),
+        publishOptions.onHandlerError,
+      );
 
       // `Promise.all` rather than `allSettled`: every promise in here came from
       // `runIsolated` and therefore cannot reject. If one ever does, that is a

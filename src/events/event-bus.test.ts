@@ -405,3 +405,114 @@ describe('createEventBus — the shared payload', () => {
     expect(Object.isFrozen(payload)).toBe(true);
   });
 });
+
+describe('createEventBus — a republished event', () => {
+  it('takes the id the publisher supplies, so a redelivery is recognisable', async () => {
+    const bus = makeBus();
+    const ids: string[] = [];
+    bus.on('thing.created', (event) => {
+      ids.push(event.id);
+    });
+
+    // The outbox relay may deliver one stored message more than once. A fresh
+    // id each time would make the second delivery indistinguishable from a
+    // second event, which is the one thing a consumer must be able to tell
+    // apart under at-least-once delivery.
+    await bus.publish('thing.created', { id: 'thing-1' }, { eventId: 'outbox-row-1' });
+    await bus.publish('thing.created', { id: 'thing-1' }, { eventId: 'outbox-row-1' });
+
+    expect(ids).toEqual(['outbox-row-1', 'outbox-row-1']);
+  });
+
+  it('takes the time the fact happened over the time it was delivered', async () => {
+    const bus = makeBus();
+    let occurredAt: Date | undefined;
+    bus.on('thing.created', (event) => {
+      occurredAt = event.occurredAt;
+    });
+
+    const enqueuedAt = new Date('2024-04-30T09:00:00.000Z');
+    await bus.publish('thing.created', { id: 'thing-1' }, { occurredAt: enqueuedAt });
+
+    // An audit line stamped with the relay's schedule records the relay.
+    expect(occurredAt).toEqual(enqueuedAt);
+  });
+
+  it('still mints both when the publisher is stating the fact for the first time', async () => {
+    const bus = makeBus();
+    let envelope: DomainEvent<'thing.created', { id: string }> | undefined;
+    bus.on('thing.created', (event) => {
+      envelope = event as DomainEvent<'thing.created', { id: string }>;
+    });
+
+    await bus.publish('thing.created', { id: 'thing-1' });
+
+    expect(envelope?.id).toBe('event-1');
+    expect(envelope?.occurredAt).toEqual(new Date('2024-05-01T12:00:00.000Z'));
+  });
+});
+
+describe('createEventBus — a publisher that needs to know', () => {
+  it('reports this publish’s handler failures to the publisher, not the bus', async () => {
+    const busReporter = jest.fn();
+    const bus = makeBus(busReporter);
+    const publishReporter = jest.fn();
+
+    bus.on('thing.created', async function failingHandler() {
+      throw new Error('sink unreachable');
+    });
+
+    await bus.publish('thing.created', { id: 'thing-1' }, { onHandlerError: publishReporter });
+
+    expect(publishReporter).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'sink unreachable' }),
+      expect.objectContaining({ name: 'thing.created' }),
+      { handlerName: 'failingHandler' },
+    );
+    // One incident, reported once. The caller that asked is the one that knows
+    // what it means — see the outbox dispatcher, which turns it into a retry.
+    expect(busReporter).not.toHaveBeenCalled();
+  });
+
+  it('isolates handlers exactly as before — publish still resolves', async () => {
+    const bus = makeBus(silent);
+    const healthy = jest.fn();
+
+    bus.on('thing.created', async () => {
+      throw new Error('boom');
+    });
+    bus.on('thing.created', healthy);
+
+    await expect(
+      bus.publish('thing.created', { id: 'thing-1' }, { onHandlerError: () => undefined }),
+    ).resolves.toBeUndefined();
+    expect(healthy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a throwing per-publish reporter fail the publish', async () => {
+    const bus = makeBus(silent);
+    bus.on('thing.created', async () => {
+      throw new Error('boom');
+    });
+
+    await expect(
+      bus.publish('thing.created', { id: 'thing-1' }, {
+        onHandlerError: () => {
+          throw new Error('the reporter is broken too');
+        },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('falls back to the bus reporter for a publish that did not ask', async () => {
+    const busReporter = jest.fn();
+    const bus = makeBus(busReporter);
+    bus.on('thing.created', async () => {
+      throw new Error('boom');
+    });
+
+    await bus.publish('thing.created', { id: 'thing-1' });
+
+    expect(busReporter).toHaveBeenCalledTimes(1);
+  });
+});

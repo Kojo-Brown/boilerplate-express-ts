@@ -5,9 +5,10 @@ import { VersionConflictError } from '@/concurrency';
 import type { Authenticated } from '@/lib/pipeline';
 import type { RouteOperation } from '@/lib/route-decorators';
 import { MemoryCacheStore, withCache, withRetry, withTimeout } from '@/lib/route-decorators';
-import { EVENT_BUS, REQUEST_CONTEXT, USER_REPOSITORY } from '@/container/tokens';
+import { EVENT_BUS, OUTBOX, REQUEST_CONTEXT, USER_REPOSITORY } from '@/container/tokens';
 import { scopeOf } from '@/middleware/container.middleware';
 import { withRetryableTransaction } from '@/db/retry-transaction';
+import { withTransaction } from '@/db/transaction';
 import type { RetryableTransactionOptions } from '@/db/retry-transaction';
 import { assertAdminRemains, patchRemovesAdminRole } from '@/users/last-admin';
 import type { UserRow } from '@/users/users.repository';
@@ -132,20 +133,45 @@ const getUser: RouteOperation<UserRow, GetUserRequest> = async (req) => {
 const createUser: RouteOperation<UserRow, CreateUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
+  const users = scope.resolve(USER_REPOSITORY);
+  const outbox = scope.resolve(OUTBOX);
 
-  const user = await scope.resolve(USER_REPOSITORY).create(req.body);
+  // The insert and the event commit together or not at all, which is the whole
+  // of the outbox pattern and the reason this route grew a transaction it did
+  // not previously need. It used to `create()` on the pool and publish
+  // afterwards: two writes to two systems with a window between them, and a
+  // process that died in that window left a user nobody downstream ever heard
+  // about — permanently, because the process that would have retried the
+  // publish is the one that died. Nothing about the failure is visible from
+  // either side afterwards. The row is there and looks right.
+  //
+  // The event is delivered by the relay a moment later rather than before this
+  // returns, and that is the trade being made: the caller's 201 no longer
+  // implies the audit line has been written. What it does imply is that the
+  // audit line *will* be.
+  const user = await withTransaction(async (tx) => {
+    const created = await users.create(req.body, tx);
+
+    await outbox.enqueue(
+      tx,
+      'user.created',
+      {
+        userId: created.id,
+        email: created.email,
+        roles: created.roles,
+        actorId: context.actorId,
+      },
+      { correlationId: context.correlationId },
+    );
+
+    return created;
+  });
+
+  // Outside the transaction, and deliberately after it: an invalidation issued
+  // before the commit would drop the entry a concurrent read is about to
+  // refill from the pre-insert state, which is the one ordering that leaves the
+  // cache wrong *after* the write lands.
   await usersCache.clear();
-
-  await scope.resolve(EVENT_BUS).publish(
-    'user.created',
-    {
-      userId: user.id,
-      email: user.email,
-      roles: user.roles,
-      actorId: context.actorId,
-    },
-    { correlationId: context.correlationId },
-  );
 
   return user;
 };
