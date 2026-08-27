@@ -9,6 +9,7 @@ import { registerGoogleStrategy } from '@/auth/oauth/google.strategy';
 import { registerErrorTranslator } from '@/lib/error-translators';
 import { postgresErrorTranslator } from '@/db/db.errors';
 import { multerErrorTranslator } from '@/upload/upload.errors';
+import { csvErrorTranslator } from '@/streams/csv.errors';
 import { domainEventBus } from '@/events';
 import { registerDomainSubscribers } from '@/events/subscribers';
 import { env } from '@/config/env';
@@ -20,6 +21,7 @@ registerGoogleStrategy();
 // The error middleware never learns about Postgres or Multer.
 registerErrorTranslator(postgresErrorTranslator);
 registerErrorTranslator(multerErrorTranslator);
+registerErrorTranslator(csvErrorTranslator);
 
 // Same idea one layer up: the publishers do not know who is listening, and this
 // is the only file that knows the full subscriber list. Attaching here rather
