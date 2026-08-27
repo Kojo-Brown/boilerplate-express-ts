@@ -99,6 +99,12 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   `FOR UPDATE SKIP LOCKED`; what at-least-once obliges a subscriber to do, why a
   delivered row is deleted rather than marked, and where the delivery boundary
   actually sits when the dispatcher is an in-process bus.
+- [CSV ingest](./docs/csv-ingest.md) — a streaming, backpressure-aware bulk
+  import built on `pipeline()`; where backpressure actually lives and how it is
+  measured rather than asserted, why a CSV record is not a line, what
+  `highWaterMark` defaults cost in object mode, and the split between a
+  malformed document (4xx) and a malformed row (collected, reported, and
+  imported around).
 
 ## Authentication
 

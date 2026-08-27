@@ -18,6 +18,32 @@ export type WhereCondition<TRow extends QueryResultRow> = {
   [K in keyof TRow]?: TRow[K];
 };
 
+/**
+ * The number of bind parameters one extended-query message can carry.
+ *
+ * A property of the PostgreSQL wire protocol — the parameter count is an
+ * `int16` — rather than a configuration setting, which is why it is a constant
+ * here and not an option.
+ */
+export const MAX_BIND_PARAMETERS = 65_535;
+
+export interface CreateManyOptions<TRow extends QueryResultRow> {
+  /**
+   * `'error'` (the default) lets a unique violation fail the whole statement.
+   * `'ignore'` skips the offending rows and inserts the rest.
+   */
+  readonly onConflict?: 'error' | 'ignore';
+  /**
+   * The columns whose unique index `'ignore'` applies to. Omitted, `DO NOTHING`
+   * absorbs a violation of *any* unique or exclusion constraint on the table,
+   * which is broader than almost any caller means: an import meant to tolerate
+   * a repeated email would also silently drop a row that collided on some
+   * unrelated index added later, and the symptom would be a count that is quietly
+   * short. Naming the target is what keeps "duplicate" specific.
+   */
+  readonly conflictTarget?: readonly Extract<keyof TRow, string>[];
+}
+
 export abstract class BaseRepository<
   TRow extends QueryResultRow,
   TInsert extends Record<string, unknown> = Record<string, unknown>,
@@ -156,6 +182,98 @@ export abstract class BaseRepository<
     );
     if (!result) throw new Error(`Insert into "${this.tableName}" returned no rows`);
     return result;
+  }
+
+  /**
+   * Inserts many rows in one statement, optionally skipping the ones that
+   * would violate a unique constraint.
+   *
+   * ## Why this is not a loop over `create`
+   *
+   * Because the round trip is the cost. Every `create` is a request, a parse, a
+   * plan and a network turn, and at 500 rows that is 500 of each for work the
+   * server could do in one — on a link with a 1ms RTT the loop spends half a
+   * second doing nothing but waiting. A streaming ingest is exactly where that
+   * shows up, because the whole point of streaming is that the bytes arrive
+   * faster than a per-row loop can absorb them.
+   *
+   * ## Why `rows.length` is not the caller's free choice
+   *
+   * The wire protocol carries bind parameters in an `int16` count, so a single
+   * statement may have at most 65,535 of them — a hard ceiling of the protocol
+   * and not a tunable. With `c` columns the batch is capped at `65535 / c`, and
+   * exceeding it does not degrade: `pg` sends a message the server rejects, and
+   * the failure arrives as a protocol error naming nothing that would lead
+   * anyone to the batch size. Checked here, where the numbers are known.
+   *
+   * ## Why every row must have the same keys
+   *
+   * One statement has one column list. Filling a missing key with `NULL` would
+   * be the accommodating thing to do and would silently override the column's
+   * `DEFAULT` — `roles` becoming `NULL` instead of `ARRAY['user']`, on the
+   * subset of rows that happened to omit it, which then fails a `NOT NULL` far
+   * from the cause or, worse, does not. Uniformity is cheap for a caller to
+   * guarantee and expensive for anyone to debug.
+   */
+  async createMany(
+    rows: readonly TInsert[],
+    options: CreateManyOptions<TRow> = {},
+    tx?: Queryable,
+  ): Promise<TRow[]> {
+    if (rows.length === 0) return [];
+
+    const db = this.executor(tx);
+    const first = rows[0];
+    if (!first) return [];
+
+    const columns = Object.keys(first);
+    if (columns.length === 0) {
+      throw new RangeError(`createMany into "${this.tableName}": rows have no columns`);
+    }
+
+    const parameterCount = columns.length * rows.length;
+    if (parameterCount > MAX_BIND_PARAMETERS) {
+      throw new RangeError(
+        `createMany into "${this.tableName}": ${String(rows.length)} rows × ${String(columns.length)} columns is ${String(parameterCount)} bind parameters, over the protocol limit of ${String(MAX_BIND_PARAMETERS)}`,
+      );
+    }
+
+    const expected = new Set(columns);
+    const values: unknown[] = [];
+    const tuples = rows.map((row, rowIndex) => {
+      const keys = Object.keys(row);
+      if (keys.length !== expected.size || keys.some((key) => !expected.has(key))) {
+        throw new RangeError(
+          `createMany into "${this.tableName}": row ${String(rowIndex)} has columns [${keys.join(', ')}], expected [${columns.join(', ')}]`,
+        );
+      }
+      const placeholders = columns.map((column) => {
+        values.push((row as Record<string, unknown>)[column]);
+        return `$${String(values.length)}`;
+      });
+      return `(${placeholders.join(', ')})`;
+    });
+
+    // The conflict target is constrained to the row's own keys by the type, so
+    // no caller-supplied text reaches the SQL — the same guard `findWhereArrayContains`
+    // uses, and the reason this takes a column list rather than an `ON CONFLICT`
+    // fragment.
+    const conflict =
+      options.onConflict === 'ignore'
+        ? ` ON CONFLICT ${
+            options.conflictTarget && options.conflictTarget.length > 0
+              ? `(${options.conflictTarget.map((column) => `"${column}"`).join(', ')}) `
+              : ''
+          }DO NOTHING`
+        : '';
+
+    // `RETURNING *` with `DO NOTHING` returns only the rows that were inserted,
+    // which is what makes "how many were new" answerable without a second query
+    // — and what makes it a count of writes rather than of attempts.
+    return db.query<TRow>(
+      `INSERT INTO "${this.tableName}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES ${tuples.join(', ')}${conflict} RETURNING *`,
+      values,
+    );
   }
 
   /**

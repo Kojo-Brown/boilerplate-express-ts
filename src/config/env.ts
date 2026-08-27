@@ -89,6 +89,24 @@ const envSchema = z.object({
   WORKER_POOL_TASK_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   // The `Retry-After` advertised when the queue is full.
   WORKER_POOL_RETRY_AFTER_SECONDS: z.coerce.number().int().positive().default(1),
+  // The ceiling on a `POST /v1/users/import` body, enforced against the bytes
+  // that actually arrive rather than against `Content-Length` — a chunked
+  // request declares no length, so the header is a fast path and this is the
+  // limit. It exists because a route that reads `req` as a raw stream has no
+  // bound at all otherwise: `express.json()` carries a `limit`, and the reason
+  // this endpoint can see the stream is that no body parser claimed it. 32 MiB
+  // is roughly 400,000 rows of `email,roles`, which is a bulk import; a
+  // migration larger than that wants a job, not a request.
+  USER_IMPORT_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(32 * 1024 * 1024),
+  // How many rejected rows are described individually in the response. The
+  // count is always exact; this bounds the detail, because the wrong file
+  // uploaded against this endpoint rejects every row and a per-row explanation
+  // for a million of them is an out-of-memory on the error path.
+  USER_IMPORT_MAX_REPORTED_ERRORS: z.coerce.number().int().nonnegative().default(100),
   // Payloads at or above this size are hashed on a thread; smaller ones are
   // hashed inline. Below roughly this size the message round trip and the
   // structured-clone copy cost more than the hashing they avoid, so offloading

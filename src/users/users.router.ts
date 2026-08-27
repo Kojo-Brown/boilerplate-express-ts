@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { usersOperations } from '@/users/users.controller';
+import { importUsers, requireCsvUpload } from '@/users/users-import.controller';
 import {
   createUserBodySchema,
   updateUserBodySchema,
@@ -35,6 +36,26 @@ const adminOnly = authenticated.use(requireRoles('admin'));
  * established rather than one asserted at the edge and hoped for here.
  */
 router.get('/', adminOnly.handle(usersOperations.list));
+
+/**
+ * The bulk write, and the one route here whose body is never parsed into
+ * `req.body`.
+ *
+ * It sits above `/:id` because Express matches in declaration order and
+ * `import` is a perfectly good `:id` — registered after, every POST here would
+ * be routed to a handler looking for a user with that identifier.
+ *
+ * No `idempotent()`, unlike `POST /`. The middleware fingerprints the request
+ * body to decide whether a retry is the same request, and there is no body to
+ * fingerprint until the stream has been read — reading it to take a hash would
+ * buffer the upload this endpoint exists not to buffer. What replaces it is a
+ * property of the write itself: every row is inserted `ON CONFLICT (email) DO
+ * NOTHING`, so re-sending the same file converges instead of duplicating. That
+ * is a weaker guarantee than an idempotency key and an honest one — it makes
+ * the *rows* idempotent, not the response, so a retry reports `written: 0` for
+ * work the first attempt did.
+ */
+router.post('/import', adminOnly.use(requireCsvUpload).handle(importUsers));
 
 /**
  * `sendWithETag` instead of the default envelope write, because the writes
