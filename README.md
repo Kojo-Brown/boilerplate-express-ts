@@ -105,6 +105,11 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   `highWaterMark` defaults cost in object mode, and the split between a
   malformed document (4xx) and a malformed row (collected, reported, and
   imported around).
+- [Range downloads](./docs/range-downloads.md) — `GET /v1/uploads/:objectId`
+  with `Range`, `ETag`, `If-Range` and `If-None-Match`; why an invalid range is
+  200 and an unsatisfiable one is 416, why a failed `If-Range` sends everything
+  rather than failing, why the read costs two calls to the object store, and
+  what a stream that has already started can and cannot do about an error.
 
 ## Authentication
 

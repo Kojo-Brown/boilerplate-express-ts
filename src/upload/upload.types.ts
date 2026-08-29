@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { OBJECT_ID_PATTERN } from '@/upload/object-key';
 
 export const ALLOWED_CONTENT_TYPES = [
   'image/jpeg',
@@ -17,6 +18,21 @@ export const presignBodySchema = z.object({
 });
 
 export type PresignBody = z.infer<typeof presignBodySchema>;
+
+/**
+ * The one path parameter the download route takes.
+ *
+ * Validated at the edge like every other input, which here is load-bearing
+ * rather than routine: this string becomes part of a storage key, so the
+ * difference between a 422 and a path traversal is this schema. `regex` rather
+ * than `uuid()` because the extension is part of the id — `buildObjectKey`
+ * keeps it so that a stored object carries a hint of what it is.
+ */
+export const downloadParamsSchema = z.object({
+  objectId: z.string().regex(OBJECT_ID_PATTERN, 'Not a well-formed object id'),
+});
+
+export type DownloadParams = z.infer<typeof downloadParamsSchema>;
 
 export interface PresignData {
   presignedUrl: string;

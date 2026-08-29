@@ -1,12 +1,18 @@
 import { ANY_VERSION } from '@/concurrency/concurrency.types';
 import type { Precondition } from '@/concurrency/concurrency.types';
+import { parseEntityTagList } from '@/http/entity-tag';
 
 /**
- * RFC 9110's entity-tag rules, and nothing else. No Express types, no status
- * codes, no errors — a parse failure is *returned* rather than thrown, so this
- * module stays a codec that a test can exercise on strings alone and the
+ * `If-Match` on a write, reduced to the versions it names. No Express types, no
+ * status codes, no errors — a parse failure is *returned* rather than thrown, so
+ * this module stays a codec that a test can exercise on strings alone and the
  * decision about what a bad header costs a client lives in `precondition.ts`
  * with the rest of the HTTP contract.
+ *
+ * The entity-tag grammar itself is `@/http/entity-tag`, shared with the read
+ * side (`If-None-Match`, `If-Range`). What stays here is everything that is
+ * specific to *this* API's tags: that they name a row `version`, and that a tag
+ * which cannot name one is dropped rather than rejected.
  */
 
 /** The validator this API hands out on a versioned representation. */
@@ -32,11 +38,6 @@ const MAX_VERSION = 2_147_483_647;
  * a numeric one.
  */
 const VERSION_TAG = /^[1-9][0-9]{0,9}$/;
-
-interface EntityTag {
-  readonly weak: boolean;
-  readonly value: string;
-}
 
 /**
  * A parsed `If-Match`, or the reason it could not be one.
@@ -120,81 +121,4 @@ function toVersion(value: string): number | null {
   if (!VERSION_TAG.test(value)) return null;
   const version = Number(value);
   return version <= MAX_VERSION ? version : null;
-}
-
-/**
- * `1#entity-tag` from RFC 9110, scanned rather than split on commas.
- *
- * `header.split(',')` is the obvious implementation and is wrong: a comma is a
- * legal character *inside* an entity-tag, so splitting tears `"a,b"` into two
- * malformed halves. This walks the string instead, which costs a dozen lines
- * and cannot misread a tag.
- *
- * Returns `null` for anything that is not a well-formed list.
- */
-function parseEntityTagList(header: string): EntityTag[] | null {
-  const tags: EntityTag[] = [];
-  let i = 0;
-
-  const skipOws = (): void => {
-    while (i < header.length && (header[i] === ' ' || header[i] === '\t')) i++;
-  };
-
-  // The `#` rule tolerates empty members — `"1", , "2"` — so commas are eaten
-  // greedily as separators. An empty list is still not a list, which the
-  // length check at the end enforces.
-  const skipSeparators = (): void => {
-    skipOws();
-    while (i < header.length && header[i] === ',') {
-      i++;
-      skipOws();
-    }
-  };
-
-  skipSeparators();
-
-  while (i < header.length) {
-    const read = readEntityTag(header, i);
-    if (read === null) return null;
-    tags.push(read.tag);
-    i = read.next;
-
-    skipOws();
-    if (i >= header.length) break;
-    // Anything other than a separator here is junk between tags — including
-    // another tag, since `"1""2"` is two values with no list between them.
-    if (header[i] !== ',') return null;
-    skipSeparators();
-  }
-
-  return tags.length > 0 ? tags : null;
-}
-
-function readEntityTag(header: string, start: number): { tag: EntityTag; next: number } | null {
-  let i = start;
-  let weak = false;
-
-  if (header.startsWith('W/', i)) {
-    weak = true;
-    i += 2;
-  }
-
-  if (header[i] !== '"') return null;
-  i++;
-
-  const valueStart = i;
-  while (i < header.length && header[i] !== '"') {
-    if (!isEtagChar(header.charCodeAt(i))) return null;
-    i++;
-  }
-
-  // Ran off the end without a closing quote.
-  if (i >= header.length) return null;
-
-  return { tag: { weak, value: header.slice(valueStart, i) }, next: i + 1 };
-}
-
-/** `etagc = %x21 / %x23-7E / obs-text`. Excludes `"`, controls and DEL. */
-function isEtagChar(code: number): boolean {
-  return code === 0x21 || (code >= 0x23 && code <= 0x7e) || (code >= 0x80 && code <= 0xff);
 }

@@ -1,5 +1,14 @@
-import { buildPublicUrl, generatePresignedPutUrl, uploadToS3 } from '@/upload/s3.service';
+import type { Readable } from 'node:stream';
+import {
+  buildPublicUrl,
+  generatePresignedPutUrl,
+  getS3ObjectRange,
+  headS3Object,
+  uploadToS3,
+} from '@/upload/s3.service';
 import type {
+  ObjectRange,
+  ObjectStat,
   PresignedUpload,
   StoredObject,
   StorageProvider,
@@ -27,6 +36,14 @@ export function createS3StorageProvider(): StorageProvider {
 
     publicUrl(key: string): string {
       return buildPublicUrl(key);
+    },
+
+    async stat(key: string): Promise<ObjectStat | undefined> {
+      return headS3Object(key);
+    },
+
+    async openRange(key: string, range: ObjectRange, ifMatch: string): Promise<Readable> {
+      return getS3ObjectRange(key, range, ifMatch);
     },
   };
 }

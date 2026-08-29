@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import type { Readable } from 'node:stream';
 import { AppError } from '@/lib/errors';
 import { createMemoryStorageProvider } from '@/upload/storage/memory.provider';
 import type { MemoryStorageProvider } from '@/upload/storage/memory.provider';
@@ -182,5 +184,155 @@ describe('publicUrl and clear', () => {
       ),
       'PRESIGNED_URL_UNKNOWN',
     );
+  });
+});
+
+describe('stat', () => {
+  it('reports the size, type, digest and write time of a stored object', async () => {
+    const bytes = Buffer.from('png-bytes');
+    const { key } = await storage.put(bytes, 'photo.png', 'image/png');
+
+    const stat = await storage.stat(key);
+
+    expect(stat).toEqual({
+      key,
+      size: bytes.length,
+      contentType: 'image/png',
+      etag: `"${createHash('sha256').update(bytes).digest('hex')}"`,
+      lastModified: new Date(clock.now()),
+    });
+  });
+
+  it('reports nothing rather than throwing for a key that was never written', async () => {
+    // "Not there" is what a client asking for a deleted key looks like, which
+    // the route turns into a 404 — not an exceptional condition.
+    await expect(storage.stat('uploads/never-written.png')).resolves.toBeUndefined();
+  });
+
+  it('gives two objects with identical bytes the same tag, and different bytes different tags', async () => {
+    const a = await storage.put(Buffer.from('same'), 'a.png', 'image/png');
+    const b = await storage.put(Buffer.from('same'), 'b.png', 'image/png');
+    const c = await storage.put(Buffer.from('other'), 'c.png', 'image/png');
+
+    const [statA, statB, statC] = await Promise.all([
+      storage.stat(a.key),
+      storage.stat(b.key),
+      storage.stat(c.key),
+    ]);
+
+    expect(statA?.etag).toBe(statB?.etag);
+    expect(statA?.etag).not.toBe(statC?.etag);
+  });
+});
+
+describe('openRange', () => {
+  /** Everything a stream yielded, and how it was chunked getting there. */
+  async function drain(stream: Readable): Promise<{ body: Buffer; chunks: number[] }> {
+    const parts: Buffer[] = [];
+    for await (const chunk of stream) {
+      parts.push(chunk as Buffer);
+    }
+    return { body: Buffer.concat(parts), chunks: parts.map((p) => p.length) };
+  }
+
+  async function storeLarge(sizeBytes: number): Promise<{ key: string; etag: string }> {
+    // A deterministic filler rather than random bytes: a failing assertion
+    // should name an offset, not a seed.
+    const bytes = Buffer.alloc(sizeBytes);
+    for (let i = 0; i < sizeBytes; i++) bytes[i] = i % 251;
+
+    const { key } = await storage.put(bytes, 'big.pdf', 'application/pdf');
+    const stat = await storage.stat(key);
+    if (stat === undefined) throw new Error('the object just written is not there');
+    return { key, etag: stat.etag };
+  }
+
+  it('yields exactly the requested interval', async () => {
+    const bytes = Buffer.from('0123456789');
+    const { key } = await storage.put(bytes, 'a.png', 'image/png');
+    const stat = await storage.stat(key);
+    if (stat === undefined) throw new Error('the object just written is not there');
+
+    const { body } = await drain(await storage.openRange(key, { start: 2, end: 5 }, stat.etag));
+
+    expect(body.toString()).toBe('2345');
+  });
+
+  it('hands the object out in chunks rather than as one buffer', async () => {
+    // Not a style preference: in a single chunk there is no second `read()`,
+    // so nothing downstream can ever exert backpressure and a caller cannot
+    // tell this from an implementation that buffers the whole object.
+    const { key, etag } = await storeLarge(200 * 1024);
+
+    const { body, chunks } = await drain(
+      await storage.openRange(key, { start: 0, end: 200 * 1024 - 1 }, etag),
+    );
+
+    expect(body.length).toBe(200 * 1024);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(Math.max(...chunks)).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it('reads a range that spans a chunk boundary correctly', async () => {
+    const size = 200 * 1024;
+    const { key, etag } = await storeLarge(size);
+    const start = 64 * 1024 - 3;
+    const end = 64 * 1024 + 2;
+
+    const { body } = await drain(await storage.openRange(key, { start, end }, etag));
+
+    expect(body.length).toBe(end - start + 1);
+    expect([...body]).toEqual(
+      Array.from({ length: end - start + 1 }, (_, i) => (start + i) % 251),
+    );
+  });
+
+  it('refuses a key that is no longer there', async () => {
+    const { key } = await storage.put(Buffer.from('first'), 'a.png', 'image/png');
+    const stat = await storage.stat(key);
+    if (stat === undefined) throw new Error('the object just written is not there');
+
+    storage.clear();
+
+    expectAppErrorCode(
+      catchThrown(() => storage.openRange(key, { start: 0, end: 4 }, stat.etag)),
+      'OBJECT_NOT_FOUND',
+    );
+  });
+
+  it('rejects a stale tag on an object that is still there', async () => {
+    const { key } = await storage.put(Buffer.from('first'), 'a.png', 'image/png');
+
+    expectAppErrorCode(
+      catchThrown(() => storage.openRange(key, { start: 0, end: 0 }, '"not-the-tag"')),
+      'REPRESENTATION_CHANGED',
+    );
+  });
+
+  it('rejects an interval the object does not contain', async () => {
+    const { key } = await storage.put(Buffer.from('0123456789'), 'a.png', 'image/png');
+    const stat = await storage.stat(key);
+    if (stat === undefined) throw new Error('the object just written is not there');
+    const etag = stat.etag;
+
+    expect(() => storage.openRange(key, { start: 0, end: 10 }, etag)).toThrow(RangeError);
+    expect(() => storage.openRange(key, { start: -1, end: 5 }, etag)).toThrow(RangeError);
+    expect(() => storage.openRange(key, { start: 6, end: 5 }, etag)).toThrow(RangeError);
+  });
+
+  it('does not copy the object per reader', async () => {
+    // `subarray`, not `slice`: two concurrent downloads of a 4 GB object must
+    // not be 8 GB of resident memory.
+    const { key, etag } = await storeLarge(128 * 1024);
+    const before = process.memoryUsage().heapUsed;
+
+    await Promise.all([
+      drain(await storage.openRange(key, { start: 0, end: 128 * 1024 - 1 }, etag)),
+      drain(await storage.openRange(key, { start: 0, end: 128 * 1024 - 1 }, etag)),
+    ]);
+
+    // Deliberately loose — this asserts that nothing allocated a multiple of
+    // the object per reader, not a precise figure a GC could move.
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(4 * 128 * 1024);
   });
 });

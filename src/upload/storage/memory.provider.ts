@@ -1,6 +1,10 @@
+import { createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { AppError } from '@/lib/errors';
 import { buildObjectKey } from '@/upload/object-key';
 import type {
+  ObjectRange,
+  ObjectStat,
   PresignedUpload,
   StoredObject,
   StorageProvider,
@@ -15,7 +19,22 @@ export interface StoredBlob {
   key: string;
   contentType: string;
   bytes: Buffer;
+  /** Quoted strong entity-tag: the SHA-256 of `bytes`, fixed at write time. */
+  etag: string;
+  storedAt: Date;
 }
+
+/**
+ * How much of an object `openRange` yields per chunk.
+ *
+ * A `Readable.from([slice])` would satisfy the interface in one line and would
+ * make this adapter useless for the thing the download route exists to prove:
+ * with the whole range in a single chunk there is no second `read()`, so
+ * nothing downstream can ever apply backpressure and a test cannot tell a
+ * streaming implementation from one that buffers. 64 KiB is Node's own default
+ * file-read chunk.
+ */
+const CHUNK_BYTES = 64 * 1024;
 
 export interface MemoryStorageOptions {
   /**
@@ -29,8 +48,10 @@ export interface MemoryStorageOptions {
 
 /**
  * The in-process driver, exposed with the extra handles a caller needs to
- * *inspect* what was stored — the production contract deliberately has no way
- * to read bytes back.
+ * *inspect* what was stored. `stat` and `openRange` are on the production
+ * contract and serve the download route; `get`, `clear` and `size` are not,
+ * and exist so a test can assert against the store directly rather than
+ * through it.
  */
 export interface MemoryStorageProvider extends StorageProvider {
   readonly driver: 'memory';
@@ -82,7 +103,19 @@ export function createMemoryStorageProvider(
     // Copied, not aliased: Multer hands out buffers backed by a pooled
     // allocation, and holding the caller's instance would let later writes
     // mutate an object that is supposedly already stored.
-    objects.set(key, { key, contentType, bytes: Buffer.from(buffer) });
+    const bytes = Buffer.from(buffer);
+    objects.set(key, {
+      key,
+      contentType,
+      bytes,
+      // Digested once here rather than per download. A content hash is the
+      // strongest validator available and is exactly what `If-Range` needs;
+      // deriving a tag from the key instead would be constant across two
+      // different sets of bytes at the same key, which is the one thing an
+      // entity-tag may never be.
+      etag: `"${createHash('sha256').update(bytes).digest('hex')}"`,
+      storedAt: new Date(now()),
+    });
     return { key, url: urlFor(key) };
   }
 
@@ -101,6 +134,52 @@ export function createMemoryStorageProvider(
 
     publicUrl(key: string): string {
       return urlFor(key);
+    },
+
+    stat(key: string): Promise<ObjectStat | undefined> {
+      const blob = objects.get(key);
+      if (blob === undefined) return Promise.resolve(undefined);
+      return Promise.resolve({
+        key,
+        size: blob.bytes.length,
+        contentType: blob.contentType,
+        etag: blob.etag,
+        lastModified: blob.storedAt,
+      });
+    },
+
+    openRange(key: string, range: ObjectRange, ifMatch: string): Promise<Readable> {
+      const blob = objects.get(key);
+      if (blob === undefined) {
+        throw new AppError(404, 'No object stored under that key', 'OBJECT_NOT_FOUND');
+      }
+      // The window this closes is genuinely reachable in-process: `clear()` and
+      // a second `completePresigned` both run between a caller's `stat` and its
+      // `openRange` in a test that interleaves them, and the S3 adapter has the
+      // same guard for the same reason. Answering with the new bytes under the
+      // old object's `Content-Length` is a truncated or over-long body.
+      if (blob.etag !== ifMatch) {
+        throw new AppError(412, 'The object changed while being read', 'REPRESENTATION_CHANGED');
+      }
+      if (range.start < 0 || range.end >= blob.bytes.length || range.start > range.end) {
+        throw new RangeError(
+          `openRange: [${range.start}, ${range.end}] is outside a ${blob.bytes.length}-byte object`,
+        );
+      }
+
+      // `subarray`, so no copy of the object is made per request — and then
+      // handed out in chunks, so the consumer's `highWaterMark` governs how
+      // much is in flight rather than the object's size doing it.
+      const slice = blob.bytes.subarray(range.start, range.end + 1);
+      return Promise.resolve(
+        Readable.from(
+          (function* chunks(): Generator<Buffer> {
+            for (let offset = 0; offset < slice.length; offset += CHUNK_BYTES) {
+              yield slice.subarray(offset, Math.min(offset + CHUNK_BYTES, slice.length));
+            }
+          })(),
+        ),
+      );
     },
 
     completePresigned(presignedUrl: string, buffer: Buffer, contentType: string): StoredObject {

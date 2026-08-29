@@ -70,6 +70,16 @@ beforeEach(() => {
     presignPut: mockPresignPut,
     put: mockPut,
     publicUrl: (key: string) => `memory://${key}`,
+    // The read half of the contract, unimplemented rather than omitted: these
+    // are upload cases, and a stub that throws says so louder than a `jest.fn()`
+    // returning `undefined` would. `download.controller.test.ts` covers the
+    // other direction.
+    stat: () => {
+      throw new Error('an upload unit test must not read an object back');
+    },
+    openRange: () => {
+      throw new Error('an upload unit test must not read an object back');
+    },
   });
 });
 
