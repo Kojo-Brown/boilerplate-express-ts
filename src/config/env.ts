@@ -113,6 +113,40 @@ const envSchema = z.object({
   // would make small uploads slower to protect an event loop that was never
   // going to stall for 40µs. Measured against `digest`, which runs at ~1–2 GB/s.
   WORKER_POOL_OFFLOAD_MIN_BYTES: z.coerce.number().int().positive().default(65_536),
+  // How often an idle `GET /v1/events/stream` is written to. It has to sit
+  // below the shortest idle timeout on the path — nginx's `proxy_read_timeout`
+  // and an ALB's idle timeout are both 60s by default — and comfortably below,
+  // since the budget is consumed by the *gap* between heartbeats and a tick can
+  // be late under load. It is also what bounds how long a connection whose peer
+  // vanished without a FIN goes on holding a slot.
+  SSE_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(15_000),
+  // The reconnection delay advertised to clients, in milliseconds. It is the
+  // only backoff control the server has over an `EventSource`, which reconnects
+  // on its own forever — so it is what a rolling restart's thundering herd is
+  // spread over.
+  SSE_RETRY_MS: z.coerce.number().int().nonnegative().default(3_000),
+  // Events kept resumable for a reconnecting client. A count rather than a
+  // duration because what it bounds is memory, held for the life of the process
+  // whether or not anyone reconnects. A client that misses more than this is
+  // told to re-read state rather than handed a partial history.
+  SSE_REPLAY_BUFFER_SIZE: z.coerce.number().int().positive().default(256),
+  // Concurrent streams this process will hold open. Nothing else bounds them —
+  // an event stream has no request that ends — and each one is a socket, a
+  // timer, and a share of the write amplification on every publish.
+  SSE_MAX_CONNECTIONS: z.coerce.number().int().positive().default(1_000),
+  // Bytes that may sit unacknowledged for one stream before it is dropped as a
+  // slow consumer. `res.write()` to a peer that has stopped reading buffers in
+  // this process without limit, so without a ceiling one stalled client
+  // accumulates every event the service publishes. Dropping is safe here in a
+  // way it would not be elsewhere: the client reconnects with `Last-Event-ID`
+  // and is replayed what it missed.
+  SSE_MAX_BUFFERED_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1024 * 1024),
+  // The `Retry-After` advertised when `SSE_MAX_CONNECTIONS` is reached.
+  SSE_RETRY_AFTER_SECONDS: z.coerce.number().int().positive().default(5),
 });
 
 const parsed = envSchema.safeParse(process.env);

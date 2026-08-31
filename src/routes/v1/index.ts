@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { authRouter } from '@/auth/auth.router';
 import { uploadRouter } from '@/upload/upload.router';
 import { usersRouter } from '@/users/users.router';
+import { sseRouter } from '@/sse/sse.router';
 import { sendOk } from '@/lib/response';
 
 const v1Router: Router = Router();
 
 v1Router.use('/auth', authRouter);
+v1Router.use('/events', sseRouter);
 v1Router.use('/uploads', uploadRouter);
 v1Router.use('/users', usersRouter);
 

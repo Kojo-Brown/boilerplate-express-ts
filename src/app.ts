@@ -12,6 +12,8 @@ import { multerErrorTranslator } from '@/upload/upload.errors';
 import { csvErrorTranslator } from '@/streams/csv.errors';
 import { domainEventBus } from '@/events';
 import { registerDomainSubscribers } from '@/events/subscribers';
+import { attachDomainEventFeed } from '@/sse/domain-feed';
+import { domainEventStreamHub } from '@/sse/events.hub';
 import { env } from '@/config/env';
 import { sendFail } from '@/lib/response';
 
@@ -28,6 +30,13 @@ registerErrorTranslator(csvErrorTranslator);
 // than in each subscriber's own module is what makes a deployment able to leave
 // one out — a module that subscribed on import could not be.
 registerDomainSubscribers(domainEventBus);
+
+// One more subscriber, and the same rule: the publishers do not know the event
+// stream exists, and a deployment that does not want `GET /v1/events/stream`
+// leaves this line out rather than editing anything that publishes. It is here
+// and not in `sse.router.ts` because a router that subscribed on import could
+// not be left out — the same reason the subscribers above are attached here.
+attachDomainEventFeed(domainEventBus, domainEventStreamHub);
 
 export function createApp(): express.Application {
   const app = express();
