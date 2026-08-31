@@ -110,6 +110,12 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   200 and an unsatisfiable one is 416, why a failed `If-Range` sends everything
   rather than failing, why the read costs two calls to the object store, and
   what a stream that has already started can and cannot do about an error.
+- [Server-Sent Events](./docs/server-sent-events.md) — `GET /v1/events/stream`
+  with a heartbeat and `Last-Event-ID` resume; why event ids carry a per-run
+  prefix, why a cursor that cannot be honoured is answered on an open stream
+  rather than with a 4xx, why a slow consumer is dropped rather than buffered,
+  and what `no-transform` and the wire format's total lack of an escape
+  sequence are each protecting against.
 
 ## Authentication
 

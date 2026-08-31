@@ -4,6 +4,7 @@ import { appContainer } from '@/container/app-container';
 import { EVENT_BUS, IDEMPOTENCY_STORE, OUTBOX } from '@/container/tokens';
 import { startIdempotencyPurgeJob } from '@/idempotency';
 import { createEventBusDispatcher, startOutboxRelay } from '@/outbox';
+import { domainEventStreamHub } from '@/sse/events.hub';
 
 const app = createApp();
 
@@ -45,6 +46,34 @@ if (env.OUTBOX_RELAY_INTERVAL_SECONDS > 0) {
   });
 }
 
-app.listen(env.PORT, () => {
+const server = app.listen(env.PORT, () => {
   console.log(`Server running on http://localhost:${env.PORT}/v1`);
 });
+
+/**
+ * Shutdown, and the reason this file grew one at all.
+ *
+ * `server.close()` stops accepting connections and then waits for the open ones
+ * to end. Every route in this service ends on its own, so until now that wait
+ * was a formality — and `GET /v1/events/stream` is the first route that never
+ * ends. Left alone it turns a rolling deploy's graceful stop into a hang that
+ * resolves when the orchestrator loses patience and sends `SIGKILL`, taking
+ * every in-flight request with it.
+ *
+ * The order is what matters: the streams are closed first, so `close()` has a
+ * finite set to wait for. Clients see the connection end and reconnect on their
+ * own — `EventSource` needs no help — landing on the new instance and resuming
+ * from `Last-Event-ID`. The replay log does not survive the restart, so those
+ * reconnects are answered `reset`, which is exactly what a client's re-sync
+ * path is for.
+ */
+function shutdown(signal: NodeJS.Signals): void {
+  console.log(`[server] ${signal} received, closing ${domainEventStreamHub.connectionCount} stream(s)`);
+  domainEventStreamHub.closeAll('server-shutdown');
+  server.close(() => {
+    process.exit(0);
+  });
+}
+
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);
