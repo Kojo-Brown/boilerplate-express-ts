@@ -147,6 +147,67 @@ const envSchema = z.object({
     .default(1024 * 1024),
   // The `Retry-After` advertised when `SSE_MAX_CONNECTIONS` is reached.
   SSE_RETRY_AFTER_SECONDS: z.coerce.number().int().positive().default(5),
+  // The path the WebSocket upgrade must target. It is served off the same HTTP
+  // server as the REST API — a WebSocket connection starts as an HTTP GET, so a
+  // second port would mean a second ingress rule and a second TLS terminator
+  // for a handshake this one already receives. `0` is not a valid value; set
+  // `WS_ENABLED=false` to leave the endpoint out entirely.
+  WS_PATH: z.string().startsWith('/').default('/v1/ws'),
+  // Whether the endpoint is attached at all. A deployment that does not want a
+  // WebSocket surface leaves it off rather than firewalling a path, which is
+  // also what keeps the e2e suites from binding one they do not use.
+  WS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Concurrent sockets this process will hold. Nothing else bounds them — a
+  // WebSocket has no request that ends — and each one is a socket, a heartbeat
+  // timer, two token buckets and a share of every broadcast.
+  WS_MAX_CONNECTIONS: z.coerce.number().int().positive().default(1_000),
+  // The largest frame `ws` will reassemble. This is the *only* bound on inbound
+  // memory: an application-level size check runs after the whole frame has been
+  // buffered, so it can complain about a 500 MB message but not prevent one.
+  // Above this, `ws` refuses during reassembly and closes with 1009.
+  WS_MAX_PAYLOAD_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(64 * 1024),
+  // Inbound messages admitted in one burst. Real clients are bursty — a page
+  // that reconnects and re-subscribes to nine things sends nine frames in a
+  // millisecond — and a limiter with no burst allowance closes exactly the
+  // connections that were behaving.
+  WS_RATE_LIMIT_BURST: z.coerce.number().int().positive().default(20),
+  // Sustained inbound messages per second, per connection.
+  WS_RATE_LIMIT_MESSAGES_PER_SECOND: z.coerce.number().int().positive().default(10),
+  // Sustained inbound bytes per second, per connection. A second dimension
+  // because the first does not bound work: 10 messages/second of 64 KB each is
+  // inside any message-count budget and is 640 KB/s of parsing.
+  WS_RATE_LIMIT_BYTES_PER_SECOND: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(128 * 1024),
+  // How often a quiet socket is pinged, and how long the peer has to answer.
+  // Like the SSE heartbeat this has to sit below the shortest idle timeout on
+  // the path (nginx and an ALB both default to 60s), and it is what turns a peer
+  // that vanished without a FIN into a socket that eventually closes.
+  WS_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
+  // Outbound bytes that may sit unacknowledged for one socket before it is
+  // dropped as a slow consumer. `send()` to a peer that has stopped reading
+  // buffers in this process without limit.
+  WS_MAX_BUFFERED_BYTES: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(1024 * 1024),
+  // Origins a *browser* may open a socket from, comma-separated, or `*` to
+  // accept any. A WebSocket handshake ignores the same-origin policy and CORS
+  // does not apply to it, so `Origin` is the only signal about which page
+  // initiated a browser connection. With bearer-token auth the cross-site
+  // attack already fails, so this is defence in depth — see `handshake.ts`.
+  // Defaults to `CORS_ORIGIN` in `wsAllowedOrigins` when left empty.
+  WS_ALLOWED_ORIGINS: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);

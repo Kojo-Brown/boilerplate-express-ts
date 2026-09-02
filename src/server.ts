@@ -5,6 +5,7 @@ import { EVENT_BUS, IDEMPOTENCY_STORE, OUTBOX } from '@/container/tokens';
 import { startIdempotencyPurgeJob } from '@/idempotency';
 import { createEventBusDispatcher, startOutboxRelay } from '@/outbox';
 import { domainEventStreamHub } from '@/sse/events.hub';
+import { attachDomainWebSocketServer } from '@/ws/ws.gateway';
 
 const app = createApp();
 
@@ -50,6 +51,17 @@ const server = app.listen(env.PORT, () => {
   console.log(`Server running on http://localhost:${env.PORT}/v1`);
 });
 
+// Attached to the *server* rather than the app, and only here, because a
+// WebSocket endpoint is not a route: it is a listener on the `upgrade` event of
+// an `http.Server`, which `createApp` does not have and an e2e suite building an
+// app should not acquire. Same rule as the timers above — this belongs to the
+// process.
+const wsServer = env.WS_ENABLED ? attachDomainWebSocketServer(server) : null;
+
+if (wsServer !== null) {
+  console.log(`WebSocket endpoint listening on ws://localhost:${env.PORT}${env.WS_PATH}`);
+}
+
 /**
  * Shutdown, and the reason this file grew one at all.
  *
@@ -70,6 +82,21 @@ const server = app.listen(env.PORT, () => {
 function shutdown(signal: NodeJS.Signals): void {
   console.log(`[server] ${signal} received, closing ${domainEventStreamHub.connectionCount} stream(s)`);
   domainEventStreamHub.closeAll('server-shutdown');
+
+  // The same argument, one protocol over. A WebSocket is a connection that
+  // never ends by itself, so `server.close()` would wait on every open socket
+  // until the orchestrator ran out of patience and sent `SIGKILL` — taking the
+  // in-flight REST requests with it. Closing with 1001 "going away" is also
+  // what tells a client to reconnect rather than to treat the drop as an error,
+  // which is the difference between a rolling deploy nobody notices and one
+  // that surfaces as client-side failures.
+  //
+  // Not awaited: `wsServer.close()` resolves after `ws` has finished tearing
+  // down, and `server.close()`'s own callback is already the thing waiting for
+  // the sockets to go. Awaiting it here would mean an `async` shutdown handler
+  // whose rejection nothing would observe.
+  void wsServer?.close();
+
   server.close(() => {
     process.exit(0);
   });

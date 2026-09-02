@@ -116,6 +116,12 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   rather than with a 4xx, why a slow consumer is dropped rather than buffered,
   and what `no-transform` and the wire format's total lack of an escape
   sequence are each protecting against.
+- [WebSockets](./docs/websockets.md) — `ws://…/v1/ws` with JWT handshake auth
+  and per-connection rate limits; why the token travels in a subprotocol rather
+  than a query string or a cookie, why the handshake is refused before the 101
+  and what that requires of `noServer`, why the limiter is a token bucket in two
+  dimensions rather than the fixed window the REST routes use, and why a socket
+  needs a scheduled close at its own credential's expiry when no route does.
 
 ## Authentication
 
