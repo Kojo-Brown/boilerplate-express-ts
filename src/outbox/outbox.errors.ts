@@ -8,8 +8,11 @@
  * has to work from at 3am, and "Error: undefined" is not a starting point.
  */
 
-/** How much of a failure's text is kept on the row. */
-export const MAX_LAST_ERROR_LENGTH = 1_000;
+// `describeFailure` and its length cap moved to `@/lib/describe-error` when the
+// Redis stream consumer needed to stamp a reason onto a parked entry: the two
+// subsystems have to render a failure the same way, and a copy is how they stop
+// doing that. Re-exported here so `@/outbox`'s surface is unchanged.
+export { describeFailure, MAX_LAST_ERROR_LENGTH } from '@/lib/describe-error';
 
 /**
  * The relay stopped waiting for a dispatcher.
@@ -90,24 +93,4 @@ export class OutboxDeliveryError extends Error {
     this.name = 'OutboxDeliveryError';
     Error.captureStackTrace(this, this.constructor);
   }
-}
-
-/**
- * The one-line form of a failure that goes onto the row.
- *
- * Truncated, because `last_error` is written on every failed attempt and a
- * dispatcher that stringifies a response body into its message would otherwise
- * put a megabyte in a column the relay reads on every claim. The stack is
- * deliberately not stored: it describes the relay, which is the same three
- * frames every time, not the failure.
- */
-export function describeFailure(error: unknown): string {
-  const text =
-    error instanceof Error
-      ? `${error.name}: ${error.message}`
-      : `Non-error thrown: ${String(error)}`;
-
-  return text.length > MAX_LAST_ERROR_LENGTH
-    ? `${text.slice(0, MAX_LAST_ERROR_LENGTH - 1)}…`
-    : text;
 }

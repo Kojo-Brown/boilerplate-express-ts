@@ -122,6 +122,12 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   and what that requires of `noServer`, why the limiter is a token bucket in two
   dimensions rather than the fixed window the REST routes use, and why a socket
   needs a scheduled close at its own credential's expiry when no route does.
+- [Redis Streams](./docs/redis-streams.md) — a consumer group with
+  claim-on-stall recovery (`pnpm worker:stream`); why the pending entries list
+  is both the delivery record and the retry schedule, why the reclaim floor must
+  exceed the handler timeout or healthy work runs twice, why `XAUTOCLAIM` is not
+  used, why acknowledging an entry does not remove it from the stream, and why
+  retiring a consumer that still holds entries destroys them.
 
 ## Authentication
 

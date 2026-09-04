@@ -96,8 +96,29 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      # The stream consumer's integration suite talks to a real server rather
+      # than to a fake, because what it asserts is Redis's behaviour: that
+      # XCLAIM refuses an entry below the idle floor, that a pending reference
+      # to a trimmed entry is dropped, that XPENDING reports the delivery count
+      # the poison ceiling is read from. A fake asserting those would only be
+      # asserting what its author believed.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
       NODE_ENV: test
+      # Set here and nowhere else: the suite skips when it is absent, so that a
+      # contributor without Redis can still run `pnpm test`. `redis.guard.test.ts`
+      # is what stops that convenience from turning into a suite that silently
+      # never runs — it fails the build if CI is set and this is not.
+      REDIS_TEST_URL: redis://localhost:6379
       PORT: "4000"
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/boilerplate_test
       JWT_ACCESS_EXPIRES_IN: 15m
