@@ -3,11 +3,49 @@ import { env } from '@/config/env';
 import { appContainer } from '@/container/app-container';
 import { EVENT_BUS, IDEMPOTENCY_STORE, OUTBOX } from '@/container/tokens';
 import { startIdempotencyPurgeJob } from '@/idempotency';
+import type { OutboxDispatcher } from '@/outbox';
 import { createEventBusDispatcher, startOutboxRelay } from '@/outbox';
+import {
+  createStreamConnections,
+  createStreamOutboxDispatcher,
+  createStreamPublisher,
+} from '@/redis';
 import { domainEventStreamHub } from '@/sse/events.hub';
 import { attachDomainWebSocketServer } from '@/ws/ws.gateway';
 
 const app = createApp();
+
+/**
+ * Where a claimed outbox row is delivered, which is a deployment decision
+ * rather than a code one — hence an env var and not an import.
+ *
+ * `bus` is the default and needs nothing: the claiming replica publishes to its
+ * own in-process bus, so subscribers run on whichever API replica won the row.
+ * `redis-stream` appends the row's envelope to `REDIS_STREAM_KEY` instead, and
+ * the consumer group in `pnpm worker:stream` decides who runs it. The number of
+ * times a subscriber runs is unchanged — a group hands each entry to exactly
+ * one consumer — but the work moves off the request-serving replicas.
+ *
+ * The connection is opened lazily, inside the branch, so the default deployment
+ * never constructs a Redis client at all. `env` has already refused the
+ * combination where the target is a stream and no URL was given.
+ */
+function outboxDispatcher(): OutboxDispatcher {
+  if (env.OUTBOX_DISPATCH_TARGET === 'bus') {
+    return createEventBusDispatcher(appContainer.resolve(EVENT_BUS));
+  }
+
+  const { commands } = createStreamConnections(env.REDIS_URL);
+  console.log(`[server] outbox delivering to Redis stream "${env.REDIS_STREAM_KEY}"`);
+
+  return createStreamOutboxDispatcher(
+    createStreamPublisher({
+      commands,
+      key: env.REDIS_STREAM_KEY,
+      maxLen: env.REDIS_STREAM_MAX_LEN,
+    }),
+  );
+}
 
 // Started here and not in `createApp`, because a background timer belongs to
 // the *process* and not to the application object: every e2e suite builds an
@@ -39,7 +77,7 @@ if (env.IDEMPOTENCY_PURGE_INTERVAL_SECONDS > 0) {
 if (env.OUTBOX_RELAY_INTERVAL_SECONDS > 0) {
   startOutboxRelay({
     store: appContainer.resolve(OUTBOX),
-    dispatcher: createEventBusDispatcher(appContainer.resolve(EVENT_BUS)),
+    dispatcher: outboxDispatcher(),
     intervalMs: env.OUTBOX_RELAY_INTERVAL_SECONDS * 1000,
     batchSize: env.OUTBOX_RELAY_BATCH_SIZE,
     maxAttempts: env.OUTBOX_RELAY_MAX_ATTEMPTS,

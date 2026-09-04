@@ -201,6 +201,62 @@ const envSchema = z.object({
     .int()
     .positive()
     .default(1024 * 1024),
+  // Where the Redis Streams consumer connects. Empty disables the whole
+  // subsystem — the worker entrypoint refuses to start and the outbox keeps
+  // dispatching to the local bus — which is what makes Redis an opt-in
+  // dependency rather than one every developer has to run to boot the API.
+  REDIS_URL: z.string().default(''),
+  // The stream domain events are published to and consumed from. One key, not
+  // one per event type: a consumer group is per stream, so splitting by type
+  // would mean a group, a consumer and a reclaim loop for each — and no
+  // ordering benefit, since a group gives none anyway.
+  REDIS_STREAM_KEY: z.string().min(1).default('domain-events'),
+  // The consumer group. Every replica of the worker joins the same one, which
+  // is what makes them share the stream instead of each processing all of it.
+  // A second, differently-named group over the same key is how a new consumer
+  // (an analytics sink, say) reads everything without taking entries away from
+  // this one.
+  REDIS_STREAM_GROUP: z.string().min(1).default('api-workers'),
+  // This replica's name inside the group. Empty means "use the hostname",
+  // which is the right default under an orchestrator: stable for the life of
+  // the pod, distinct between pods, and reused by a restart — so a restarted
+  // worker inherits its own predecessor's pending entries by name rather than
+  // leaving an orphan consumer behind for the reclaim loop to find.
+  REDIS_STREAM_CONSUMER: z.string().default(''),
+  // The stream's length cap. Acknowledging an entry does not remove it from
+  // the stream, so without this the key grows for as long as the service runs.
+  // It is a safety margin over the worst tolerable backlog and not a queue
+  // depth: an entry evicted while still pending is lost work.
+  REDIS_STREAM_MAX_LEN: z.coerce.number().int().positive().default(100_000),
+  // Entries read per `XREADGROUP`. They are processed one at a time, so this
+  // is a round-trip optimisation rather than a concurrency setting.
+  REDIS_STREAM_BATCH_SIZE: z.coerce.number().int().positive().default(16),
+  // How long a read blocks on an empty stream. Also the floor on how long a
+  // graceful shutdown takes, since the read is already in flight when the
+  // signal arrives.
+  REDIS_STREAM_BLOCK_MS: z.coerce.number().int().positive().default(2_000),
+  // Backstop for a handler that never returns. Like the outbox's, it bounds
+  // the worker's *wait* rather than the work: the handler may still be running
+  // after it fires, which is one of the ways at-least-once earns its name.
+  REDIS_STREAM_HANDLER_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  // How long an entry must sit unacknowledged before another consumer may
+  // claim it — the recovery latency after a replica dies. Must stay above
+  // `REDIS_STREAM_HANDLER_TIMEOUT_MS`; see the refinement below.
+  REDIS_STREAM_MIN_IDLE_MS: z.coerce.number().int().positive().default(30_000),
+  // Deliveries before an entry is parked, counting the first. Finite because
+  // claim-on-stall has no other stopping condition: an entry that kills its
+  // handler is idle again a moment later, forever.
+  REDIS_STREAM_MAX_DELIVERIES: z.coerce.number().int().positive().default(5),
+  // How often the pending list is scanned for stalled entries. Well below
+  // `REDIS_STREAM_MIN_IDLE_MS`, since worst-case recovery is the sum of the two.
+  REDIS_STREAM_RECLAIM_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+  // Where the outbox relay delivers a claimed row. `bus` publishes it on the
+  // claiming replica's in-process bus, which is the default and needs no
+  // broker. `redis-stream` writes it to `REDIS_STREAM_KEY` instead, moving
+  // subscriber work off the API replicas and onto the worker process — the
+  // count is unchanged, since a consumer group hands each entry to exactly one
+  // consumer, but it then requires that worker to be running.
+  OUTBOX_DISPATCH_TARGET: z.enum(['bus', 'redis-stream']).default('bus'),
   // Origins a *browser* may open a socket from, comma-separated, or `*` to
   // accept any. A WebSocket handshake ignores the same-origin policy and CORS
   // does not apply to it, so `Origin` is the only signal about which page
@@ -210,7 +266,44 @@ const envSchema = z.object({
   WS_ALLOWED_ORIGINS: z.string().default(''),
 });
 
-const parsed = envSchema.safeParse(process.env);
+/**
+ * The two settings that are only wrong in combination.
+ *
+ * Both are caught at boot rather than at first use, which for a background
+ * worker is the whole difference: a consumer misconfigured this way starts
+ * cleanly, runs correctly while nothing is slow, and misbehaves for the first
+ * time during the incident that made a handler slow — which is the worst
+ * moment to learn that the reclaim floor was set too low.
+ */
+const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
+  // An entry's idle clock starts when it is delivered, so a handler allowed to
+  // run for `HANDLER_TIMEOUT_MS` leaves its entry idle for that long while
+  // nothing is wrong. A reclaim floor at or below it therefore classifies
+  // "slow" as "stalled" and hands the entry to a second consumer while the
+  // first still holds it: the same work, twice, concurrently.
+  if (value.REDIS_STREAM_MIN_IDLE_MS <= value.REDIS_STREAM_HANDLER_TIMEOUT_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['REDIS_STREAM_MIN_IDLE_MS'],
+      message:
+        `must exceed REDIS_STREAM_HANDLER_TIMEOUT_MS (${value.REDIS_STREAM_HANDLER_TIMEOUT_MS}), ` +
+        `otherwise an entry still being processed by a healthy consumer becomes claimable`,
+    });
+  }
+
+  // Routing the outbox at a stream nobody configured would leave every claimed
+  // row failing its dispatch and retrying until the ladder dead-letters it —
+  // an outage that looks like a broken relay and is a missing URL.
+  if (value.OUTBOX_DISPATCH_TARGET === 'redis-stream' && value.REDIS_URL === '') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['REDIS_URL'],
+      message: 'is required when OUTBOX_DISPATCH_TARGET is "redis-stream"',
+    });
+  }
+});
+
+const parsed = envSchemaWithInvariants.safeParse(process.env);
 
 if (!parsed.success) {
   console.error('❌ Invalid environment variables:', parsed.error.flatten().fieldErrors);
