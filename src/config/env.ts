@@ -264,10 +264,59 @@ const envSchema = z.object({
   // attack already fails, so this is defence in depth — see `handshake.ts`.
   // Defaults to `CORS_ORIGIN` in `wsAllowedOrigins` when left empty.
   WS_ALLOWED_ORIGINS: z.string().default(''),
+  // The BullMQ queue background work is produced onto and consumed from. One
+  // queue rather than one per job name: a worker consumes a single queue, so
+  // splitting by name would mean a worker process, a connection and a
+  // concurrency budget for each. Split when two kinds of work genuinely need
+  // different ones — a slow report export starving quick notifications is the
+  // usual reason — not before.
+  JOB_QUEUE_NAME: z.string().min(1).default('jobs'),
+  // Namespaces every Redis key the queue owns. Worth changing when one Redis
+  // instance is shared by several services, since the queue name alone is
+  // `jobs` in all of them. It is BullMQ's own default, restated here because a
+  // deployment that changes it must change it in the producer and the worker
+  // together or they address different keys.
+  JOB_QUEUE_PREFIX: z.string().min(1).default('bull'),
+  // Runs of a job before it is dead-lettered, counting the first. With the 500ms
+  // base and 30s ceiling below, five attempts spans roughly a minute of outage
+  // before a job stops being retried and starts waiting for a human — short,
+  // because the work here is user-visible and a link delivered four minutes
+  // late is not a delivery.
+  JOB_QUEUE_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  // Ceiling on the first retry's delay; the window doubles per attempt and the
+  // actual delay is drawn uniformly from it. See `@/lib/backoff`.
+  JOB_QUEUE_BASE_DELAY_MS: z.coerce.number().int().positive().default(500),
+  // Ceiling on any single delay, however many attempts have passed. It is what
+  // BullMQ's own `exponential` strategy lacks, and the reason this service
+  // registers its own: without it, raising the attempt count silently raises
+  // the worst-case delay exponentially.
+  JOB_QUEUE_MAX_DELAY_MS: z.coerce.number().int().positive().default(30_000),
+  // Jobs one worker process runs at once. They share an event loop, so this
+  // buys overlap on I/O and nothing on CPU — and it multiplies how many jobs a
+  // SIGKILL leaves for another worker to reclaim.
+  JOB_QUEUE_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  // How long a job's lock survives before another worker may treat it as
+  // stalled. The lock is renewed every half of this while a handler runs, so it
+  // bounds recovery after a crash rather than the handler; set below the
+  // slowest healthy handler it would classify a slow job as a dead one and run
+  // the work twice, concurrently.
+  JOB_QUEUE_LOCK_DURATION_MS: z.coerce.number().int().positive().default(30_000),
+  // Completed jobs kept for debugging. A count rather than an age because what
+  // it bounds is Redis memory.
+  JOB_QUEUE_KEEP_COMPLETED: z.coerce.number().int().nonnegative().default(1_000),
+  // Failed jobs kept. This is the dead-letter queue's backstop — the transfer
+  // reads the job out of the failed set — so it may not be zero, and the
+  // producer refuses to start if it is.
+  JOB_QUEUE_KEEP_FAILED: z.coerce.number().int().positive().default(5_000),
+  // Dead-letter records kept before the oldest are dropped. Much smaller than
+  // the failed retention: records arrive here at the rate things go wrong
+  // rather than at the rate things happen, and one that ages out unexamined was
+  // never going to be examined.
+  JOB_DEAD_LETTER_MAX_SIZE: z.coerce.number().int().positive().default(10_000),
 });
 
 /**
- * The two settings that are only wrong in combination.
+ * The settings that are only wrong in combination.
  *
  * Both are caught at boot rather than at first use, which for a background
  * worker is the whole difference: a consumer misconfigured this way starts
@@ -288,6 +337,21 @@ const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       message:
         `must exceed REDIS_STREAM_HANDLER_TIMEOUT_MS (${value.REDIS_STREAM_HANDLER_TIMEOUT_MS}), ` +
         `otherwise an entry still being processed by a healthy consumer becomes claimable`,
+    });
+  }
+
+  // A ceiling below the first rung is not a slow ladder, it is a broken one:
+  // `fullJitterDelay` takes `min(maxMs, baseMs * 2^(n-1))` as its window, so
+  // every attempt would draw from `[0, maxMs)` and the backoff would stop
+  // growing before it started. Caught here rather than at the first retry,
+  // which is the first moment a worker would otherwise notice.
+  if (value.JOB_QUEUE_MAX_DELAY_MS < value.JOB_QUEUE_BASE_DELAY_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['JOB_QUEUE_MAX_DELAY_MS'],
+      message:
+        `must be at least JOB_QUEUE_BASE_DELAY_MS (${value.JOB_QUEUE_BASE_DELAY_MS}), ` +
+        `otherwise every retry draws from the same window and the ladder never widens`,
     });
   }
 

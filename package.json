@@ -10,6 +10,9 @@
     "onlyBuiltDependencies": [
       "argon2",
       "esbuild"
+    ],
+    "ignoredBuiltDependencies": [
+      "msgpackr-extract"
     ]
   },
   "scripts": {
@@ -18,6 +21,8 @@
     "start": "node dist/server.js",
     "worker:stream": "tsx src/scripts/stream-worker.ts",
     "start:worker:stream": "node dist/scripts/stream-worker.js",
+    "worker:queue": "tsx src/scripts/queue-worker.ts",
+    "start:worker:queue": "node dist/scripts/queue-worker.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --max-warnings=0",
     "test": "jest",
@@ -29,6 +34,7 @@
     "@aws-sdk/client-s3": "^3.750.0",
     "@aws-sdk/s3-request-presigner": "^3.750.0",
     "argon2": "^0.43.0",
+    "bullmq": "6.3.4",
     "express": "^5.0.1",
     "express-rate-limit": "^7.5.0",
     "express-session": "^1.18.1",
