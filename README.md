@@ -128,6 +128,13 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   exceed the handler timeout or healthy work runs twice, why `XAUTOCLAIM` is not
   used, why acknowledging an entry does not remove it from the stream, and why
   retiring a consumer that still holds entries destroys them.
+- [Job queue](./docs/job-queue.md) — BullMQ with retries, full-jitter backoff
+  and a dead-letter queue (`pnpm worker:queue`); why the attempt count is a
+  producer option while the delays are a worker setting and what happens when
+  the two disagree, why BullMQ's own `exponential` strategy is not used, why
+  `finishedOn` is the only reliable signal that an attempt was the last one, why
+  the failed set is the dead-letter queue's backstop rather than a replacement
+  for it, and why a redacted record is one that cannot be replayed.
 
 ## Authentication
 
