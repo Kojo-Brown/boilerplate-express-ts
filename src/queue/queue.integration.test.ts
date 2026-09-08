@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { ConnectionOptions } from 'bullmq';
 import { createDeadLetterQueue, createJobQueue, jobQueueConnection } from '@/queue/bull';
 import {
   createBullDeadLetterStore,
@@ -65,7 +66,12 @@ async function until(
 }
 
 describeRedis('BullMQ job queue against a real server', () => {
-  const connection = jobQueueConnection(url);
+  // Built per harness rather than here. `describe.skip` still *runs* its
+  // callback to collect the cases it will then skip, so anything evaluated at
+  // this level runs on a machine with no Redis — and `jobQueueConnection`
+  // refuses an empty URL, which turned "skipped without REDIS_TEST_URL" into a
+  // failed suite for exactly the contributor the skip exists for.
+  const connection = (): ConnectionOptions => jobQueueConnection(url);
   const teardown: (() => Promise<unknown>)[] = [];
 
   afterEach(async () => {
@@ -93,8 +99,12 @@ describeRedis('BullMQ job queue against a real server', () => {
     const queueName = `test-jobs-${randomUUID()}`;
     const noop = (): void => undefined;
 
-    const queue = createJobQueue({ connection, queueName, onError: noop });
-    const deadLetterQueue = createDeadLetterQueue({ connection, queueName, onError: noop });
+    const queue = createJobQueue({ connection: connection(), queueName, onError: noop });
+    const deadLetterQueue = createDeadLetterQueue({
+      connection: connection(),
+      queueName,
+      onError: noop,
+    });
 
     teardown.push(async () => {
       await queue.obliterate({ force: true });
@@ -120,7 +130,7 @@ describeRedis('BullMQ job queue against a real server', () => {
       delayedDelays: async () => (await queue.getJobs(['delayed'], 0, 9)).map((job) => job.delay),
       async startWorker(handlers: JobHandlers<TestJobs>, retry: RetryPolicy = SLOW_RETRY) {
         const worker = createJobQueueWorker<TestJobs>({
-          connection,
+          connection: connection(),
           queueName,
           handlers,
           retry,
