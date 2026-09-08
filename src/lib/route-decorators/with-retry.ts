@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import { AppError } from '@/lib/errors';
+import { abortableDelay } from '@/lib/abortable-delay';
 import { fullJitterDelay } from '@/lib/backoff';
 import type { RouteOperation } from '@/lib/route-decorators/types';
 import { deriveContext } from '@/lib/route-decorators/types';
@@ -53,34 +54,6 @@ export interface RetryOptions {
   random?: () => number;
 }
 
-/** Rejects if the signal aborts first, so a dead client stops the backoff. */
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(toError(signal.reason));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-
-    // A declaration rather than a `const`, so the timer callback above can name
-    // it before it is defined.
-    function onAbort(): void {
-      clearTimeout(timer);
-      reject(toError(signal.reason));
-    }
-
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-/** `signal.reason` is `any` by specification; normalise before rejecting. */
-function toError(reason: unknown): Error {
-  return reason instanceof Error ? reason : new Error('Operation aborted');
-}
-
 /**
  * Re-runs the operation while it keeps failing transiently.
  *
@@ -101,7 +74,7 @@ export function withRetry<TResult, TReq extends Request = Request>(
     maxDelayMs = 1000,
     isRetryable = isTransientError,
     retryNonIdempotent = false,
-    sleep = delay,
+    sleep = abortableDelay,
     random = Math.random,
   } = options;
 

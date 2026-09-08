@@ -313,6 +313,69 @@ const envSchema = z.object({
   // rather than at the rate things happen, and one that ages out unexamined was
   // never going to be examined.
   JOB_DEAD_LETTER_MAX_SIZE: z.coerce.number().int().positive().default(10_000),
+  // Deadline for one outbound HTTP attempt, covering headers and body. It is
+  // what makes the retry ladder reachable at all: the failure a circuit breaker
+  // most needs to see is a dependency that accepts connections and never
+  // answers, and without a deadline that failure never *completes*, so nothing
+  // is ever recorded and the caller's socket is held until the client gives up
+  // — which, with no timeout, is never.
+  HTTP_CLIENT_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  // Attempts per outbound call, counting the first. Three, not more: each extra
+  // attempt is another multiple of the traffic a struggling dependency receives
+  // at its worst moment, and the tail latency it buys the caller is paid by
+  // every request behind it.
+  HTTP_CLIENT_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  // Ceiling on the first retry's window; it doubles per attempt and the delay is
+  // drawn uniformly from it. See `@/lib/backoff`.
+  HTTP_CLIENT_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(100),
+  // Ceiling on any single retry window, however many attempts have passed. It
+  // keeps "how many times" and "how long between" independent: without it,
+  // raising the attempt count raises the worst-case wait exponentially.
+  HTTP_CLIENT_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(2_000),
+  // Longest `Retry-After` an origin can talk this client into waiting out.
+  // Above it the response is returned unretried — an origin asking for five
+  // minutes is describing an outage, not a blip, and holding an inbound request
+  // open to honour it converts one dependency's problem into exhausted capacity
+  // here.
+  HTTP_CLIENT_MAX_RETRY_AFTER_MS: z.coerce.number().int().positive().default(20_000),
+  // How much of a *retried* response body is read before the connection is
+  // given up on. Reading it is what lets the retry reuse the socket rather than
+  // pay a fresh handshake; the cap is what stops that from being an unbounded
+  // read of an angry proxy's error page. Never applies to a body the caller
+  // receives.
+  HTTP_CLIENT_DRAIN_BYTES: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(64 * 1024),
+  // How much history a breaker counts. Older outcomes are dropped whole rather
+  // than decayed: a dependency that failed hard ten minutes ago and has been
+  // healthy since must not be one bad response away from tripping again.
+  HTTP_CLIENT_BREAKER_WINDOW_MS: z.coerce.number().int().positive().default(10_000),
+  // Resolution of that window — the granularity of forgetting. Too few and the
+  // failure rate lurches as a bucket rotates out; too many and each holds too
+  // little to mean anything.
+  HTTP_CLIENT_BREAKER_BUCKETS: z.coerce.number().int().positive().default(10),
+  // Failure fraction at which a breaker opens. Half, rather than something
+  // close to 1: by the time nine calls in ten are failing, every caller has
+  // already spent a timeout apiece finding out.
+  HTTP_CLIENT_BREAKER_FAILURE_RATE: z.coerce.number().gt(0).max(1).default(0.5),
+  // Outcomes required in the window before that rate may trip anything. It is
+  // what stops a quiet dependency's single failed call from reading as a 100%
+  // failure rate — a breaker that opens on one bad response converts a blip
+  // into a guaranteed `OPEN_MS` outage.
+  HTTP_CLIENT_BREAKER_MIN_THROUGHPUT: z.coerce.number().int().positive().default(20),
+  // How long a breaker stays open before admitting a probe. Long enough for a
+  // pod to restart or a failover to finish; the probe instant is jittered, so
+  // replicas that tripped together do not return together.
+  HTTP_CLIENT_BREAKER_OPEN_MS: z.coerce.number().int().positive().default(30_000),
+  // Concurrent probes while half-open. One, because the question is "is it
+  // back", and asking it ten times at once is the thundering herd the breaker
+  // exists to prevent, aimed at the moment the dependency can least absorb it.
+  HTTP_CLIENT_BREAKER_HALF_OPEN_PROBES: z.coerce.number().int().positive().default(1),
+  // Consecutive probe successes required to close. Raise it for a dependency
+  // that fails intermittently, where one success proves less than it looks.
+  HTTP_CLIENT_BREAKER_HALF_OPEN_SUCCESSES: z.coerce.number().int().positive().default(1),
 });
 
 /**
@@ -352,6 +415,46 @@ const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       message:
         `must be at least JOB_QUEUE_BASE_DELAY_MS (${value.JOB_QUEUE_BASE_DELAY_MS}), ` +
         `otherwise every retry draws from the same window and the ladder never widens`,
+    });
+  }
+
+  // The same shape, for the outbound HTTP ladder.
+  if (value.HTTP_CLIENT_RETRY_MAX_DELAY_MS < value.HTTP_CLIENT_RETRY_BASE_DELAY_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['HTTP_CLIENT_RETRY_MAX_DELAY_MS'],
+      message:
+        `must be at least HTTP_CLIENT_RETRY_BASE_DELAY_MS (${value.HTTP_CLIENT_RETRY_BASE_DELAY_MS}), ` +
+        `otherwise every retry draws from the same window and the ladder never widens`,
+    });
+  }
+
+  // A bucket spanning less than a millisecond cannot advance, so the window
+  // would never slide and the breaker would count history forever.
+  if (value.HTTP_CLIENT_BREAKER_WINDOW_MS < value.HTTP_CLIENT_BREAKER_BUCKETS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['HTTP_CLIENT_BREAKER_WINDOW_MS'],
+      message:
+        `must be at least HTTP_CLIENT_BREAKER_BUCKETS (${value.HTTP_CLIENT_BREAKER_BUCKETS}), ` +
+        `otherwise a bucket spans less than a millisecond and the window cannot slide`,
+    });
+  }
+
+  // The one that is easy to get wrong and hard to see afterwards. Retries are
+  // counted individually by the breaker — they have to be, since three attempts
+  // is three times the load on the failing dependency — so a single call that
+  // exhausts its ladder contributes `ATTEMPTS` failures to the window all by
+  // itself. With a minimum throughput below that, one unlucky request satisfies
+  // the volume gate *and* arrives at a 100% failure rate, and the circuit opens
+  // for everybody on the strength of one caller's bad luck.
+  if (value.HTTP_CLIENT_BREAKER_MIN_THROUGHPUT < value.HTTP_CLIENT_RETRY_ATTEMPTS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['HTTP_CLIENT_BREAKER_MIN_THROUGHPUT'],
+      message:
+        `must be at least HTTP_CLIENT_RETRY_ATTEMPTS (${value.HTTP_CLIENT_RETRY_ATTEMPTS}), ` +
+        `otherwise one call's own retries can fill the window and open the circuit alone`,
     });
   }
 

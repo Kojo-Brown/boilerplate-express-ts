@@ -135,6 +135,13 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   `finishedOn` is the only reliable signal that an attempt was the last one, why
   the failed set is the dead-letter queue's backstop rather than a replacement
   for it, and why a redacted record is one that cannot be replayed.
+- [Outbound HTTP](./docs/outbound-http.md) — a circuit breaker with a
+  full-jitter retry ladder inside it; why the breaker takes a permit per
+  *attempt* rather than per call, why a 4xx must not count against a
+  dependency's health while a 429 must, why a cancelled request counts as
+  neither, why `Retry-After` is jittered rather than honoured exactly, and the
+  measurement showing that draining a discarded response body costs two
+  connections where `body.cancel()` costs four.
 
 ## Authentication
 

@@ -22,3 +22,5 @@ export { evaluateReadPreconditions, shouldApplyRange } from '@/http/conditional'
 
 export type { ByteSource, SendByteRangeOptions } from '@/http/byte-range';
 export { sendByteRange } from '@/http/byte-range';
+
+export { parseRetryAfter } from '@/http/retry-after';
