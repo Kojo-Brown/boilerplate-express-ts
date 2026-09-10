@@ -1,8 +1,11 @@
 import { abortableDelay, toAbortError } from '@/lib/abortable-delay';
 import { fullJitterDelay } from '@/lib/backoff';
 import { parseRetryAfter } from '@/http/retry-after';
+import { Bulkhead, withBulkhead } from '@/resilience/bulkhead';
+import type { BulkheadOptions } from '@/resilience/bulkhead';
 import { CircuitBreaker, CircuitOpenError } from '@/resilience/circuit-breaker';
 import type { CircuitBreakerOptions, CircuitPermit } from '@/resilience/circuit-breaker';
+import { DependencyTimeoutError, guardBodyIdle, startAttemptDeadlines } from '@/resilience/deadlines';
 
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
@@ -85,20 +88,62 @@ export interface HttpClientOptions {
   /**
    * Deadline for one attempt, covering headers *and* body.
    *
-   * Coarse on purpose: it is a backstop that guarantees a hung dependency
-   * eventually frees the socket, which is what makes the retry ladder reachable
-   * at all — without it, the failure mode a breaker exists to catch (a
-   * dependency that accepts connections and never answers) never produces the
-   * failure the breaker counts. Connect, TLS and body-idle timeouts are finer
-   * instruments and are the next spec item's; nothing here forecloses them.
+   * The backstop, and the coarsest of the three: it guarantees a hung
+   * dependency eventually frees the socket, which is what makes the retry
+   * ladder reachable at all — without it, the failure a breaker exists to catch
+   * (a dependency that accepts connections and never answers) never produces
+   * the failure the breaker counts.
    *
    * Note the consequence of "and body": a response this client returns is still
    * on this deadline, so a caller streaming a large body from a slow origin
-   * should raise `timeoutMs` for that call rather than assume headers-only.
+   * must raise `timeoutMs` for that call — and, having raised it, should set
+   * `bodyIdleTimeoutMs`, which is the deadline that stays meaningful once this
+   * one has been sized for the largest legitimate response.
    */
   readonly timeoutMs?: number;
+  /**
+   * Deadline for response *headers* alone, cleared the moment they arrive.
+   *
+   * The one that catches the failure that matters most and the one `timeoutMs`
+   * catches worst: a dependency that accepts the connection and goes quiet.
+   * Because it covers no body, it can be set to what a healthy answer actually
+   * costs — a fraction of the whole-exchange budget — so a wedged upstream is
+   * written off in that fraction instead of holding a request handler for the
+   * full ladder.
+   *
+   * Nothing forecloses connect and TLS timeouts below this. They are not
+   * expressible over `fetch`: they need the dispatcher underneath it, and
+   * undici's dispatcher protocol is not compatible across the copy Node bundles
+   * and the copy npm installs. A deployment that wants them injects its own
+   * `fetch` bound to a dispatcher it controls, which is what `fetch` being an
+   * option is for.
+   */
+  readonly headersTimeoutMs?: number;
+  /**
+   * Longest gap between response body chunks before the exchange is failed.
+   *
+   * Independent of body size, which is the whole point: `timeoutMs` has to be
+   * sized for the largest legitimate response, and at that size it is no longer
+   * a useful statement about an origin that sent one byte and died.
+   *
+   * Off unless set. Turning it on re-wraps the returned `Response` around a
+   * guarded stream — see `guardBodyIdle` — and one consequence is worth
+   * knowing: the breaker has already recorded this attempt's outcome by the
+   * time a body stalls, because the outcome is decided at the headers. A stall
+   * mid-body fails the *caller's* read; it does not count against the circuit.
+   */
+  readonly bodyIdleTimeoutMs?: number;
   readonly retry?: Partial<RetryPolicy>;
   readonly breaker?: Partial<Omit<CircuitBreakerOptions, 'name'>>;
+  /**
+   * Concurrency cap and queue for this dependency. See `Bulkhead`.
+   *
+   * Per client and never global, for the same reason the breaker is: a shared
+   * cap lets a saturated dependency's backlog refuse calls to a healthy one,
+   * which is the outage the mechanism was installed to prevent, rebuilt out of
+   * the mechanism.
+   */
+  readonly bulkhead?: Partial<Omit<BulkheadOptions, 'name'>>;
   /** Injected so a suite never opens a socket, and so a caller can pool. */
   readonly fetch?: FetchLike;
   /** Injected so a suite does not spend the backoff in real time. */
@@ -115,12 +160,18 @@ export interface HttpRequestInit extends RequestInit {
   readonly retry?: Partial<RetryPolicy>;
   /** Overrides the client's per-attempt deadline for this call only. */
   readonly timeoutMs?: number;
+  /** Overrides the client's headers deadline for this call only. */
+  readonly headersTimeoutMs?: number;
+  /** Overrides the client's body-idle deadline for this call only. */
+  readonly bodyIdleTimeoutMs?: number;
 }
 
 export interface HttpClient {
   readonly name: string;
   /** Exposed so a readiness probe or a metric can read the state. */
   readonly breaker: CircuitBreaker;
+  /** Exposed for the same reason: `stats()` is the saturation gauge. */
+  readonly bulkhead: Bulkhead;
   fetch(input: string | URL, init?: HttpRequestInit): Promise<Response>;
 }
 
@@ -284,6 +335,8 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
     name,
     baseUrl,
     timeoutMs = 5_000,
+    headersTimeoutMs,
+    bodyIdleTimeoutMs,
     fetch: doFetch = globalThis.fetch,
     sleep = abortableDelay,
     random = Math.random,
@@ -293,6 +346,7 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
 
   const clientPolicy: RetryPolicy = { ...DEFAULT_RETRY_POLICY, ...options.retry };
   assertPolicy(name, clientPolicy);
+  assertDeadlines(name, timeoutMs, headersTimeoutMs, bodyIdleTimeoutMs);
 
   const breaker = new CircuitBreaker({
     name,
@@ -306,12 +360,38 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
     ...options.breaker,
   });
 
-  async function request(input: string | URL, init: HttpRequestInit = {}): Promise<Response> {
-    const { retry: perCall, timeoutMs: perCallTimeout, ...requestInit } = init;
+  const bulkhead = new Bulkhead({
+    name,
+    maxConcurrent: 32,
+    maxQueue: 64,
+    queueTimeoutMs: 1_000,
+    now,
+    ...options.bulkhead,
+  });
+
+  async function attemptLadder(
+    input: string | URL,
+    init: HttpRequestInit,
+  ): Promise<Response> {
+    const {
+      retry: perCall,
+      timeoutMs: perCallTimeout,
+      headersTimeoutMs: perCallHeadersTimeout,
+      bodyIdleTimeoutMs: perCallBodyIdleTimeout,
+      ...requestInit
+    } = init;
     const policy: RetryPolicy = perCall === undefined ? clientPolicy : { ...clientPolicy, ...perCall };
     if (perCall !== undefined) assertPolicy(name, policy);
 
     const deadlineMs = perCallTimeout ?? timeoutMs;
+    // Only what this call actually named is checked against the new budget. The
+    // client-level values were checked at construction, and they are *clamped*
+    // rather than refused here — see `inheritDeadline`.
+    assertDeadlines(name, deadlineMs, perCallHeadersTimeout, perCallBodyIdleTimeout);
+    const headersDeadlineMs =
+      perCallHeadersTimeout ?? inheritDeadline(headersTimeoutMs, deadlineMs);
+    const bodyIdleMs = perCallBodyIdleTimeout ?? inheritDeadline(bodyIdleTimeoutMs, deadlineMs);
+
     const url = baseUrl === undefined ? input : new URL(String(input), baseUrl);
     const callerSignal = requestInit.signal ?? undefined;
     const maxAttempts = replayable(requestInit, policy) ? policy.attempts : 1;
@@ -338,12 +418,22 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
         throw err;
       }
 
-      const attemptSignal = composeSignal(callerSignal, deadlineMs);
+      const deadlines = startAttemptDeadlines({
+        client: name,
+        callerSignal,
+        requestTimeoutMs: deadlineMs,
+        headersTimeoutMs: headersDeadlineMs,
+      });
 
       let response: Response;
       try {
-        response = await doFetch(url, { ...requestInit, signal: attemptSignal });
+        response = await doFetch(url, { ...requestInit, signal: deadlines.signal });
+        deadlines.headersReceived();
       } catch (err) {
+        // Both timers, not just the headers one: this attempt is over either
+        // way, and the request timer would otherwise sit armed for the rest of
+        // its budget holding a reference to a controller nothing can reach.
+        deadlines.dispose();
         // A caller that walked away tells us nothing about the dependency.
         // Recording it would open circuits during a rolling deploy, when every
         // in-flight request is cancelled and every upstream is healthy.
@@ -362,6 +452,17 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
         onRetry?.({ client: name, attempt, delayMs, reason: 'transport', error: err, honouredRetryAfter: false });
         await sleep(delayMs, callerSignal ?? NEVER_ABORTS);
         continue;
+      }
+
+      // Guarded before anything classifies, returns or drains it, so every path
+      // below reads through the same watchdog — including `drainForRetry`,
+      // which is otherwise an unbounded read of a body from an origin that has
+      // just proved it is unwell.
+      if (bodyIdleMs !== undefined) {
+        const stalled = bodyIdleMs;
+        response = guardBodyIdle(response, stalled, () => {
+          deadlines.abort(new DependencyTimeoutError(name, 'body', stalled));
+        });
       }
 
       const outcome = classifyResponse(response.status);
@@ -404,6 +505,11 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       // backoff either way, and holding a half-read response across it keeps a
       // socket checked out of the pool for the length of the ladder.
       await drainForRetry(response, policy.drainBytes);
+      // Only now: the drain above still reads a body, and it is the last thing
+      // this attempt does. Releasing the timers before the sleep also keeps the
+      // backoff out of the attempt's budget, which is the right split — the
+      // wait is this client's decision, not the dependency's latency.
+      deadlines.dispose();
       await sleep(delayMs, callerSignal ?? NEVER_ABORTS);
     }
 
@@ -414,7 +520,34 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
     throw new Error(`${name}: retry loop ended without a response`);
   }
 
-  return { name, breaker, fetch: request };
+  /**
+   * The bulkhead goes *outside* the ladder, where the breaker goes inside it.
+   *
+   * Not symmetry that was passed over, but the consequence of what each one
+   * counts. The breaker counts attempts, because retries are what multiply load
+   * onto a failing dependency and it has to be able to stop them individually.
+   * The bulkhead counts *calls*, because what it is rationing is this service's
+   * own capacity — and an inbound request sitting out a 2s backoff is holding a
+   * handler exactly as firmly as one waiting on a socket. Released per attempt
+   * instead, the cap would be exceeded by however many calls happened to be in
+   * backoff, which is most of them precisely when the cap starts to matter.
+   *
+   * A permit is likewise released when the *headers* are in hand rather than
+   * when the caller finishes the body, since this function cannot see the read.
+   * Streaming is bounded by `timeoutMs` and `bodyIdleTimeoutMs` instead; the
+   * alternative — releasing on body completion — leaks a slot permanently the
+   * first time a caller ignores a body, and a cap that erodes is worse than one
+   * that undercounts.
+   *
+   * An open circuit drains a full queue at memory speed rather than holding it:
+   * each admitted call throws from `breaker.acquire()` without a socket, so the
+   * queue behind an outage empties as fast as promises can settle.
+   */
+  function request(input: string | URL, init: HttpRequestInit = {}): Promise<Response> {
+    return withBulkhead(bulkhead, () => attemptLadder(input, init), init.signal ?? undefined);
+  }
+
+  return { name, breaker, bulkhead, fetch: request };
 }
 
 function ladderDelay(attempt: number, policy: RetryPolicy, random: () => number): number {
@@ -458,9 +591,52 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return signal !== undefined && signal.aborted;
 }
 
-function composeSignal(caller: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const deadline = AbortSignal.timeout(timeoutMs);
-  return caller === undefined ? deadline : AbortSignal.any([caller, deadline]);
+/**
+ * A client-level deadline, narrowed to a per-call budget it no longer fits in.
+ *
+ * Clamped and not refused, and the asymmetry with `assertDeadlines` is the
+ * whole design. A caller writing `{ timeoutMs: 500 }` for one cheap probe has
+ * stated an intent that is complete on its own: everything about this call is
+ * to be tighter. Failing it because a *configured default* it never mentioned
+ * is now larger than its budget would be the library arguing with the caller
+ * about a number the caller did not choose. A caller that names both in the
+ * same call has made a genuine contradiction, and that one still throws.
+ */
+function inheritDeadline(configured: number | undefined, requestMs: number): number | undefined {
+  return configured === undefined ? undefined : Math.min(configured, requestMs);
+}
+
+/**
+ * The deadlines are only wrong against each other, so they are checked together.
+ *
+ * A headers budget above the whole-exchange budget is not a laxer timeout but a
+ * dead one — the request deadline always fires first, so the finer instrument
+ * silently never runs, and the operator who set it believes a wedged upstream
+ * is written off in 500ms when it is actually held for the full five seconds.
+ * The same is true of an idle budget: a gap longer than the whole exchange is
+ * one the exchange never survives to measure.
+ */
+function assertDeadlines(
+  name: string,
+  requestMs: number,
+  headersMs: number | undefined,
+  bodyIdleMs: number | undefined,
+): void {
+  if (!Number.isFinite(requestMs) || requestMs < 1) {
+    throw new RangeError(`HttpClient(${name}): timeoutMs must be >= 1, received ${requestMs}`);
+  }
+  if (headersMs !== undefined && (headersMs < 1 || headersMs > requestMs)) {
+    throw new RangeError(
+      `HttpClient(${name}): headersTimeoutMs (${headersMs}) must be between 1 and ` +
+        `timeoutMs (${requestMs}); above it the headers deadline can never fire`,
+    );
+  }
+  if (bodyIdleMs !== undefined && (bodyIdleMs < 1 || bodyIdleMs > requestMs)) {
+    throw new RangeError(
+      `HttpClient(${name}): bodyIdleTimeoutMs (${bodyIdleMs}) must be between 1 and ` +
+        `timeoutMs (${requestMs}); above it the idle deadline can never fire`,
+    );
+  }
 }
 
 function assertPolicy(name: string, policy: RetryPolicy): void {
