@@ -320,6 +320,39 @@ const envSchema = z.object({
   // is ever recorded and the caller's socket is held until the client gives up
   // — which, with no timeout, is never.
   HTTP_CLIENT_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  // Deadline for response *headers* alone, cleared the instant they arrive. The
+  // finer half of the timeout above and the one that catches the failure that
+  // matters most: because it covers no body, it can be set to what a healthy
+  // answer actually costs, so a dependency that accepts the connection and goes
+  // quiet is written off in a fraction of the whole-exchange budget instead of
+  // holding a request handler for all of it.
+  HTTP_CLIENT_HEADERS_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
+  // Longest gap between response body chunks before the exchange is failed and
+  // the socket released. Independent of body size, which is the point:
+  // HTTP_CLIENT_TIMEOUT_MS has to be sized for the largest legitimate response,
+  // and at that size it is no longer a useful statement about an origin that
+  // sent one byte and died.
+  HTTP_CLIENT_BODY_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
+  // Calls allowed in flight to one dependency at once. A statement about this
+  // service rather than about the dependency: it is how much of our own
+  // capacity — handlers, sockets, the heap behind pending responses — we are
+  // willing to have tied up in one upstream at the moment it stops answering.
+  // A breaker is no substitute, because a dependency that slows from 20ms to 5s
+  // never fails: it succeeds slowly, the breaker stays closed, correctly, and
+  // this service runs out of handlers for routes that never touch it.
+  HTTP_CLIENT_BULKHEAD_MAX_CONCURRENT: z.coerce.number().int().positive().default(32),
+  // Callers allowed to wait for a slot. Two rounds of the concurrency cap:
+  // enough to absorb the bursts every real traffic pattern has, small enough
+  // that a genuinely saturated dependency sheds load rather than growing a
+  // backlog nobody is still waiting on. Zero is legitimate — it makes the
+  // bulkhead pure shedding, with no queue at all.
+  HTTP_CLIENT_BULKHEAD_MAX_QUEUE: z.coerce.number().int().nonnegative().default(64),
+  // Longest a queued caller waits before being refused. The queue's own
+  // deadline, and the reason a bounded queue is not enough on its own: bounded
+  // in depth but not in time, it eventually hands a slot to a caller whose
+  // requester left seconds ago — work admitted with no reader, which is the
+  // pathology every "just add a queue" fix arrives at.
+  HTTP_CLIENT_BULKHEAD_QUEUE_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
   // Attempts per outbound call, counting the first. Three, not more: each extra
   // attempt is another multiple of the traffic a struggling dependency receives
   // at its worst moment, and the tail latency it buys the caller is paid by
@@ -455,6 +488,34 @@ const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       message:
         `must be at least HTTP_CLIENT_RETRY_ATTEMPTS (${value.HTTP_CLIENT_RETRY_ATTEMPTS}), ` +
         `otherwise one call's own retries can fill the window and open the circuit alone`,
+    });
+  }
+
+  // A deadline above the whole-exchange budget is not a laxer timeout but a
+  // dead one: HTTP_CLIENT_TIMEOUT_MS always fires first, so the finer
+  // instrument silently never runs — and the operator who set it believes a
+  // wedged upstream is dropped in 500ms when it is really held for the full
+  // five seconds. That belief is the dangerous part, which is why this is a
+  // boot failure rather than a warning.
+  if (value.HTTP_CLIENT_HEADERS_TIMEOUT_MS > value.HTTP_CLIENT_TIMEOUT_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['HTTP_CLIENT_HEADERS_TIMEOUT_MS'],
+      message:
+        `must be at most HTTP_CLIENT_TIMEOUT_MS (${value.HTTP_CLIENT_TIMEOUT_MS}), ` +
+        `otherwise the whole-exchange deadline always fires first and this one never runs`,
+    });
+  }
+
+  // The same argument for the idle watchdog: a gap longer than the whole
+  // exchange is one the exchange never survives to measure.
+  if (value.HTTP_CLIENT_BODY_IDLE_TIMEOUT_MS > value.HTTP_CLIENT_TIMEOUT_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['HTTP_CLIENT_BODY_IDLE_TIMEOUT_MS'],
+      message:
+        `must be at most HTTP_CLIENT_TIMEOUT_MS (${value.HTTP_CLIENT_TIMEOUT_MS}), ` +
+        `otherwise the whole-exchange deadline always fires first and this one never runs`,
     });
   }
 

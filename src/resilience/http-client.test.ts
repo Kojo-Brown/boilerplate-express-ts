@@ -505,6 +505,183 @@ describe('createHttpClient', () => {
     });
   });
 
+  describe('the bulkhead', () => {
+    /** A `fetch` that hangs until this test says otherwise. */
+    function pending(): { fetch: FetchLike; inFlight: () => number; releaseAll: () => void } {
+      const resolvers: ((response: Response) => void)[] = [];
+      return {
+        fetch: () => new Promise<Response>((resolve) => resolvers.push(resolve)),
+        inFlight: () => resolvers.length,
+        releaseAll: () => {
+          for (const resolve of resolvers) resolve(new Response('ok', { status: 200 }));
+          resolvers.length = 0;
+        },
+      };
+    }
+
+    it('caps how many calls reach the dependency at once', async () => {
+      const upstream = pending();
+      const { client } = harness([], {
+        fetch: upstream.fetch,
+        bulkhead: { maxConcurrent: 2, maxQueue: 5, queueTimeoutMs: 5_000 },
+      });
+
+      const calls = [1, 2, 3, 4].map(() => client.fetch('https://payments.test/charges'));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // The two beyond the cap are queued here, not in flight at the origin.
+      expect(upstream.inFlight()).toBe(2);
+      expect(client.bulkhead.stats()).toMatchObject({ inFlight: 2, queued: 2 });
+
+      upstream.releaseAll();
+      await new Promise((resolve) => setImmediate(resolve));
+      upstream.releaseAll();
+      await Promise.all(calls);
+      expect(client.bulkhead.stats()).toMatchObject({ inFlight: 0, queued: 0 });
+    });
+
+    it('sheds a call rather than queueing it once the queue is full', async () => {
+      const upstream = pending();
+      const { client } = harness([], {
+        fetch: upstream.fetch,
+        bulkhead: { maxConcurrent: 1, maxQueue: 1, queueTimeoutMs: 5_000 },
+      });
+
+      const admitted = client.fetch('https://payments.test/charges');
+      const queued = client.fetch('https://payments.test/charges');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      await expect(client.fetch('https://payments.test/charges')).rejects.toMatchObject({
+        name: 'BulkheadFullError',
+        statusCode: 503,
+      });
+      // The point of shedding: the saturated dependency never heard from the
+      // call we refused.
+      expect(upstream.inFlight()).toBe(1);
+
+      upstream.releaseAll();
+      await new Promise((resolve) => setImmediate(resolve));
+      upstream.releaseAll();
+      await Promise.all([admitted, queued]);
+    });
+
+    it('holds the slot across the backoff, not just across the attempt', async () => {
+      // The nesting claim, and the one an implementation gets wrong by putting
+      // the bulkhead inside the loop: a call sitting out a 2s backoff is
+      // holding an inbound request handler exactly as firmly as one waiting on
+      // a socket, so releasing per attempt would let the cap be exceeded by
+      // however many calls are in backoff — which is most of them, precisely
+      // when the cap starts to matter.
+      let depthDuringBackoff = 0;
+      const { client } = harness([body(503), body(200)], {
+        bulkhead: { maxConcurrent: 4, maxQueue: 0, queueTimeoutMs: 5_000 },
+        sleep: async () => {
+          depthDuringBackoff = client.bulkhead.stats().inFlight;
+        },
+      });
+
+      await client.fetch('https://payments.test/charges');
+
+      expect(depthDuringBackoff).toBe(1);
+      expect(client.bulkhead.stats().inFlight).toBe(0);
+    });
+
+    it('drains a queue at memory speed while the circuit is open', async () => {
+      const { client } = harness([body(500), body(500), body(500)], {
+        retry: { attempts: 1 },
+        bulkhead: { maxConcurrent: 1, maxQueue: 10, queueTimeoutMs: 5_000 },
+      });
+
+      await Promise.all([
+        client.fetch('https://payments.test/charges'),
+        client.fetch('https://payments.test/charges'),
+        client.fetch('https://payments.test/charges'),
+      ]);
+      expect(client.breaker.state).toBe('open');
+
+      // Each admitted call now throws from `breaker.acquire()` without a
+      // socket, so a queue behind an outage empties as fast as promises settle
+      // rather than at the dependency's timeout.
+      const shed = await Promise.allSettled(
+        Array.from({ length: 8 }, () => client.fetch('https://payments.test/charges')),
+      );
+      expect(shed.every((r) => r.status === 'rejected')).toBe(true);
+      expect(client.bulkhead.stats()).toMatchObject({ inFlight: 0, queued: 0 });
+    });
+
+    it('releases the slot when the caller abandons the queue', async () => {
+      const upstream = pending();
+      const { client } = harness([], {
+        fetch: upstream.fetch,
+        bulkhead: { maxConcurrent: 1, maxQueue: 4, queueTimeoutMs: 5_000 },
+      });
+      const controller = new AbortController();
+
+      const admitted = client.fetch('https://payments.test/charges');
+      const abandoned = client.fetch('https://payments.test/charges', {
+        signal: controller.signal,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort(new Error('client hung up'));
+
+      await expect(abandoned).rejects.toThrow('client hung up');
+      expect(client.bulkhead.stats()).toMatchObject({ queued: 0 });
+      upstream.releaseAll();
+      await admitted;
+    });
+  });
+
+  describe('the finer deadlines', () => {
+    it('narrows an inherited deadline to a tighter per-call budget', async () => {
+      // A caller writing `{ timeoutMs: 500 }` has stated a complete intent:
+      // everything about this call is to be tighter. Failing it over a
+      // configured default it never mentioned would be the library arguing
+      // about a number the caller did not choose.
+      const { client, calls } = harness([body(200)], {
+        timeoutMs: 5_000,
+        headersTimeoutMs: 2_000,
+        bodyIdleTimeoutMs: 2_000,
+      });
+
+      await expect(
+        client.fetch('https://payments.test/charges', { timeoutMs: 500 }),
+      ).resolves.toMatchObject({ status: 200 });
+      expect(calls).toHaveLength(1);
+    });
+
+    it('refuses a call that names both deadlines and contradicts itself', () => {
+      const { client } = harness([body(200)]);
+
+      // Named together in one call, this is a genuine contradiction rather
+      // than an inherited default being narrowed: the headers deadline could
+      // never fire, so the operator's belief about it would simply be false.
+      return expect(
+        client.fetch('https://payments.test/charges', {
+          timeoutMs: 500,
+          headersTimeoutMs: 900,
+        }),
+      ).rejects.toThrow(RangeError);
+    });
+
+    it.each([
+      ['a headers deadline above the exchange budget', { headersTimeoutMs: 6_000 }],
+      ['an idle deadline above the exchange budget', { bodyIdleTimeoutMs: 6_000 }],
+    ])('refuses %s at construction', (_case, options) => {
+      expect(() => createHttpClient({ name: 'payments', timeoutMs: 5_000, ...options })).toThrow(
+        RangeError,
+      );
+    });
+
+    it('guards a returned body only when an idle budget is set', async () => {
+      const unguarded = harness([body(200)], {});
+      const response = await unguarded.client.fetch('https://payments.test/charges');
+
+      // Untouched, so nothing about a response's identity is re-wrapped for a
+      // deadline that was never asked for.
+      await expect(response.text()).resolves.toBe('the origin said something');
+    });
+  });
+
   describe('configuration', () => {
     it('refuses a ladder that never widens', () => {
       expect(() =>

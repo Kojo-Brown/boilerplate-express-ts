@@ -14,10 +14,17 @@ import type { HttpClient, HttpClientOptions } from '@/resilience/http-client';
  */
 export function envHttpClientDefaults(): Pick<
   HttpClientOptions,
-  'timeoutMs' | 'retry' | 'breaker'
+  'timeoutMs' | 'headersTimeoutMs' | 'bodyIdleTimeoutMs' | 'retry' | 'breaker' | 'bulkhead'
 > {
   return {
     timeoutMs: env.HTTP_CLIENT_TIMEOUT_MS,
+    headersTimeoutMs: env.HTTP_CLIENT_HEADERS_TIMEOUT_MS,
+    bodyIdleTimeoutMs: env.HTTP_CLIENT_BODY_IDLE_TIMEOUT_MS,
+    bulkhead: {
+      maxConcurrent: env.HTTP_CLIENT_BULKHEAD_MAX_CONCURRENT,
+      maxQueue: env.HTTP_CLIENT_BULKHEAD_MAX_QUEUE,
+      queueTimeoutMs: env.HTTP_CLIENT_BULKHEAD_QUEUE_TIMEOUT_MS,
+    },
     retry: {
       attempts: env.HTTP_CLIENT_RETRY_ATTEMPTS,
       baseDelayMs: env.HTTP_CLIENT_RETRY_BASE_DELAY_MS,
@@ -57,5 +64,6 @@ export function createDependencyClient(
     ...options,
     retry: { ...defaults.retry, ...options.retry },
     breaker: { ...defaults.breaker, ...options.breaker },
+    bulkhead: { ...defaults.bulkhead, ...options.bulkhead },
   });
 }

@@ -141,7 +141,14 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   dependency's health while a 429 must, why a cancelled request counts as
   neither, why `Retry-After` is jittered rather than honoured exactly, and the
   measurement showing that draining a discarded response body costs two
-  connections where `body.cancel()` costs four.
+  connections where `body.cancel()` costs four. Also the two mechanisms a
+  breaker cannot stand in for: a per-dependency **bulkhead**, because a
+  dependency that slows from 20ms to 5s never *fails* — it succeeds slowly,
+  the breaker stays closed, correctly, and 250 calls pile up holding every
+  request handler in the process — and **three deadlines** per attempt rather
+  than one, because a whole-exchange timeout has to be sized for the largest
+  legitimate response and is therefore useless against an origin that sent one
+  byte and died.
 
 ## Authentication
 
