@@ -69,6 +69,21 @@ async function startOrigin(handler: Handler): Promise<Origin> {
   };
 }
 
+/**
+ * Polls until `condition` holds, or gives up after `timeoutMs`.
+ *
+ * For the assertions about something the *origin* observes, where the fact
+ * being asserted is that it happens at all. A fixed sleep long enough to be
+ * safe on a loaded CI runner is time every green run pays; one short enough to
+ * be quick is a flake waiting for a bad afternoon.
+ */
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 /** A client on the real transport, with the backoff and the jitter pinned. */
 function client(url: string, options: Partial<HttpClientOptions> = {}) {
   return createHttpClient({
@@ -289,7 +304,12 @@ describe('createHttpClient against a real origin', () => {
     // The claim that makes this a socket timeout rather than a stream
     // decoration: the origin sees the connection go, so it stops holding a
     // response open for a reader that has given up.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    //
+    // Polled rather than slept on a fixed margin. The assertion is that the
+    // close *happens*, not that it happens within some number of milliseconds
+    // of a loaded runner's scheduling, and a single `setTimeout` long enough to
+    // be safe there is a second this suite spends on every green run.
+    await waitFor(() => responseClosed);
     expect(responseClosed).toBe(true);
   });
 
@@ -303,18 +323,22 @@ describe('createHttpClient against a real origin', () => {
       const tick = setInterval(() => {
         sent += 1;
         res.write('chunk');
-        if (sent === 6) {
+        if (sent === 5) {
           clearInterval(tick);
           res.end();
         }
-      }, 40);
+      }, 100);
     });
 
-    const http = client(origin.url, { timeoutMs: 5_000, bodyIdleTimeoutMs: 150 });
+    const http = client(origin.url, { timeoutMs: 5_000, bodyIdleTimeoutMs: 400 });
     const response = await http.fetch('/export');
 
-    // Six chunks 40ms apart is 240ms of transfer against a 150ms idle budget.
-    await expect(response.text()).resolves.toBe('chunk'.repeat(6));
+    // Five chunks 100ms apart is 500ms of transfer against a 400ms idle budget,
+    // so a deadline measuring *duration* would fail this and one measuring
+    // silence does not. The 300ms of headroom between the chunk interval and
+    // the budget is deliberate: a margin this test can lose to a loaded runner
+    // scheduling one `setInterval` late is a flake, not a measurement.
+    await expect(response.text()).resolves.toBe('chunk'.repeat(5));
   });
 
   it('keeps concurrent sockets to a dependency under the bulkhead cap', async () => {
