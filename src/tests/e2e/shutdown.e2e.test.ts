@@ -51,7 +51,11 @@ function keepAliveClient(port: number): Client {
   return {
     get(path: string) {
       return new Promise((resolve, reject) => {
-        const req = http.get({ port, path, agent }, (res: IncomingMessage) => {
+        // `host` explicitly, matching the bind address: left to default the
+        // client asks for `localhost`, which on a dual-stack machine is both
+        // `::1` and `127.0.0.1`, and a connection failure then arrives as an
+        // `AggregateError` rather than as the error itself.
+        const req = http.get({ host: '127.0.0.1', port, path, agent }, (res: IncomingMessage) => {
           let body = '';
           res.setEncoding('utf8');
           res.on('data', (chunk: string) => {
@@ -68,6 +72,36 @@ function keepAliveClient(port: number): Client {
       agent.destroy();
     },
   };
+}
+
+/**
+ * Every error code behind a failed connection, flattened.
+ *
+ * A hostname that resolves to more than one address makes Node try each and
+ * report the collected failures as an `AggregateError` whose own message is the
+ * empty string — so this asks the codes rather than matching a message, which is
+ * a `/ECONNREFUSED/` assertion that passes locally and fails on a dual-stack CI
+ * runner with nothing in the output to say why.
+ */
+function connectionErrorCodes(error: unknown): readonly string[] {
+  if (error instanceof AggregateError) {
+    return (error.errors as unknown[]).flatMap(connectionErrorCodes);
+  }
+
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === undefined ? [] : [code];
+}
+
+/** Asserts that a request found no listener at all. */
+async function expectConnectionRefused(request: Promise<unknown>): Promise<void> {
+  const error = await request.then(
+    () => {
+      throw new Error('expected the connection to be refused, but the request was answered');
+    },
+    (reason: unknown) => reason,
+  );
+
+  expect(connectionErrorCodes(error)).toContain('ECONNREFUSED');
 }
 
 function json(body: string): { data: unknown; error: { code: string } | null } {
@@ -186,7 +220,7 @@ describe('graceful shutdown', () => {
     await waitFor(() => !server.listening);
 
     // Closed to new connections, and still holding the request from before.
-    await expect(probe.get('/v1/health')).rejects.toThrow(/ECONNREFUSED/);
+    await expectConnectionRefused(probe.get('/v1/health'));
     // The ordering that matters most: the pool is still open, because something
     // is still using it.
     expect(poolClosed).toBe(false);

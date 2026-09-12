@@ -21,7 +21,11 @@ function keepAliveClient(port: number): Client {
   return {
     get(path: string) {
       return new Promise((resolve, reject) => {
-        const req = http.get({ port, path, agent }, (res: IncomingMessage) => {
+        // `host` explicitly, matching the bind address. Left to default, the
+        // client asks for `localhost`, which on a dual-stack machine is both
+        // `::1` and `127.0.0.1` — and a failure to reach either then arrives as
+        // an `AggregateError` rather than the connection error itself.
+        const req = http.get({ host: '127.0.0.1', port, path, agent }, (res: IncomingMessage) => {
           let body = '';
           res.setEncoding('utf8');
           res.on('data', (chunk: string) => {
@@ -71,6 +75,36 @@ async function listen(handler: RequestListener): Promise<Harness> {
       });
     },
   };
+}
+
+/**
+ * Every error code behind a failed connection, flattened.
+ *
+ * `AggregateError` is the reason this is not a message match: when a hostname
+ * resolves to more than one address, Node tries each and reports the collected
+ * failures as an `AggregateError` whose own message is the empty string. A
+ * dual-stack CI runner therefore fails a `/ECONNREFUSED/` assertion that passes
+ * on a machine with no IPv6 loopback, with nothing in the output to say why.
+ */
+function connectionErrorCodes(error: unknown): readonly string[] {
+  if (error instanceof AggregateError) {
+    return (error.errors as unknown[]).flatMap(connectionErrorCodes);
+  }
+
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === undefined ? [] : [code];
+}
+
+/** Asserts that a request found no listener at all. */
+async function expectConnectionRefused(request: Promise<unknown>): Promise<void> {
+  const error = await request.then(
+    () => {
+      throw new Error('expected the connection to be refused, but the request was answered');
+    },
+    (reason: unknown) => reason,
+  );
+
+  expect(connectionErrorCodes(error)).toContain('ECONNREFUSED');
 }
 
 /** Resolves to `'timed out'` if `promise` has not settled within `ms`. */
@@ -172,7 +206,7 @@ describe('trackHttpServer', () => {
     // case this covers is the one that is reachable: the client's pooled socket.
     // It was ended with the first response, which is the behaviour under test —
     // the request below therefore opens a new connection and is refused.
-    await expect(harness.client.get('/second')).rejects.toThrow(/ECONNREFUSED/);
+    await expectConnectionRefused(harness.client.get('/second'));
     expect(await within(draining, 1_000)).toMatchObject({ outcome: 'drained' });
   });
 
