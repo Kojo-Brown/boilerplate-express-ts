@@ -71,6 +71,17 @@ services:
       # stream instead of at this replica's in-process bus.
       REDIS_URL: ${REDIS_URL:-}
       OUTBOX_DISPATCH_TARGET: ${OUTBOX_DISPATCH_TARGET:-bus}
+      # Nothing polls `/v1/health` to decide routing in a compose file, so the
+      # drain window has nobody to inform and is off by default here. Under an
+      # orchestrator it is the phase that must not be skipped — see
+      # docs/graceful-shutdown.md.
+      SHUTDOWN_DRAIN_DELAY_MS: ${SHUTDOWN_DRAIN_DELAY_MS:-0}
+      SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-25000}
+    # Docker's default is 10 seconds, which is *below* the shutdown budget above:
+    # the process would be drained, mid-sequence, by a `SIGKILL` arriving before
+    # its own deadline — the exact failure the budget exists to stay ahead of.
+    # The 5s margin is the room the sequence needs to report what it closed.
+    stop_grace_period: 30s
     ports:
       - '4000:4000'
     healthcheck:

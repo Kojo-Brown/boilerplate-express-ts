@@ -15,6 +15,7 @@ import { registerDomainSubscribers } from '@/events/subscribers';
 import { attachDomainEventFeed } from '@/sse/domain-feed';
 import { domainEventStreamHub } from '@/sse/events.hub';
 import { env } from '@/config/env';
+import { appLifecycle, shutdownGuard } from '@/shutdown';
 import { sendFail } from '@/lib/response';
 
 registerGoogleStrategy();
@@ -61,6 +62,11 @@ export function createApp(): express.Application {
   // After the correlation id, so a scope can be named by the request it serves,
   // and ahead of every router, so no handler has to ask whether it has a scope.
   app.use(containerMiddleware);
+  // After the logger, so a refusal is recorded under the same correlation id as
+  // everything else, and ahead of the routers, so it costs nothing to reach.
+  // It passes everything through until the listener has closed — see
+  // `shutdownGuard`, which is narrower than its name suggests on purpose.
+  app.use(shutdownGuard({ lifecycle: appLifecycle }));
 
   app.use('/v1', v1Router);
 
