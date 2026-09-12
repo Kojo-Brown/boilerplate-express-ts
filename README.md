@@ -149,6 +149,15 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   than one, because a whole-exchange timeout has to be sized for the largest
   legitimate response and is therefore useless against an origin that sent one
   byte and died.
+- [Graceful shutdown](./docs/graceful-shutdown.md) — four phases between
+  `SIGTERM` and `exit`, and the two opposite ways `server.close()` on its own
+  gets it wrong: it refuses traffic a load balancer is still routing in good
+  faith, and then waits forever anyway, because an in-flight request's response
+  goes out with `Connection: keep-alive` and the socket it leaves behind never
+  ends. Why the phase that does no teardown at all is the one that must not be
+  removed, why the drain window is deliberately the one wait the shutdown budget
+  cannot cut short, why sockets are `end()`ed rather than destroyed, and why the
+  pool closes last.
 
 ## Authentication
 

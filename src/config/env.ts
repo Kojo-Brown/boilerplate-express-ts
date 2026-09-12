@@ -257,6 +257,33 @@ const envSchema = z.object({
   // count is unchanged, since a consumer group hands each entry to exactly one
   // consumer, but it then requires that worker to be running.
   OUTBOX_DISPATCH_TARGET: z.enum(['bus', 'redis-stream']).default('bus'),
+  // How long the process keeps serving normally after `SIGTERM` before it
+  // closes its listener — the window a load balancer has to notice this
+  // instance is unready and stop routing to it.
+  //
+  // It is not idle time and it is not politeness: a balancer learns an instance
+  // is gone by polling it, so the interval between the readiness answer flipping
+  // and the last request being routed here is up to one poll. Closing the
+  // listener inside that window answers `ECONNREFUSED` to requests that were
+  // routed in good faith — which is a rolling deploy that drops a handful of
+  // requests per replaced replica, invisibly, because the connection never
+  // reaches any code that could log it.
+  //
+  // Set it above the readiness probe's period times its failure threshold. Five
+  // seconds covers the common Kubernetes default (a 10s period is the other
+  // common one, and wants 15). `0` is for a deployment where nothing is polling
+  // — a single container behind nothing, or a local `pnpm dev` where the wait is
+  // just a slower Ctrl-C. A second signal exits immediately either way.
+  SHUTDOWN_DRAIN_DELAY_MS: z.coerce.number().int().nonnegative().default(5_000),
+  // The whole shutdown sequence's budget, drain delay included.
+  //
+  // Must sit below the orchestrator's own grace period —
+  // `terminationGracePeriodSeconds`, 30s by default — because that is the clock
+  // that ends in `SIGKILL`. The difference is the margin the process needs to
+  // report what it did and exit on its own terms instead of being killed
+  // mid-sentence, which is also the difference between a log line that says
+  // which connections were cut off and no log line at all.
+  SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(25_000),
   // Origins a *browser* may open a socket from, comma-separated, or `*` to
   // accept any. A WebSocket handshake ignores the same-origin policy and CORS
   // does not apply to it, so `Origin` is the only signal about which page
@@ -516,6 +543,22 @@ const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       message:
         `must be at most HTTP_CLIENT_TIMEOUT_MS (${value.HTTP_CLIENT_TIMEOUT_MS}), ` +
         `otherwise the whole-exchange deadline always fires first and this one never runs`,
+    });
+  }
+
+  // The drain delay is spent *inside* the shutdown budget, so a delay at or
+  // above it leaves nothing for the teardown it precedes: the listener closes
+  // with the budget already gone, every in-flight request is cut off, and the
+  // pool is never closed — a configuration that reads like a careful, generous
+  // drain and behaves exactly like `kill -9`. Caught at boot, because the first
+  // moment it would otherwise surface is a deploy.
+  if (value.SHUTDOWN_DRAIN_DELAY_MS >= value.SHUTDOWN_TIMEOUT_MS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['SHUTDOWN_DRAIN_DELAY_MS'],
+      message:
+        `must be below SHUTDOWN_TIMEOUT_MS (${value.SHUTDOWN_TIMEOUT_MS}), ` +
+        'otherwise the drain window spends the entire shutdown budget and nothing after it runs',
     });
   }
 
