@@ -21,6 +21,16 @@ declare global {
       // `scopeOf`, which turns the absence into one 500 instead of a null
       // check per call site.
       scope?: Scope;
+
+      // The trace this request was served under, copied off the active span by
+      // `traceContextMiddleware`. Stored rather than read from the context at
+      // the point of use because the one consumer is the access log, and morgan
+      // formats its line from an `on-finished` callback — by then the request's
+      // context is no longer the active one, and reading the span there yields
+      // the trace id of whatever else the process happens to be doing.
+      //
+      // Absent whenever there is no span: tracing disabled, or an untraced path.
+      traceId?: string;
     }
   }
 }

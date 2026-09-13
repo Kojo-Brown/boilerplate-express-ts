@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { STORAGE_DRIVERS } from '@/upload/storage/storage.types';
+import { TRACES_EXPORTERS } from '@/observability/tracing.types';
 // The leaf module, not `@/lib/immutable`: the barrel also exports `freezeInDev`,
 // which reads `env` to decide whether it is enabled, and importing it here would
 // make configuration and the freeze helpers a cycle.
@@ -436,6 +437,43 @@ const envSchema = z.object({
   // Consecutive probe successes required to close. Raise it for a dependency
   // that fails intermittently, where one success proves less than it looks.
   HTTP_CLIENT_BREAKER_HALF_OPEN_SUCCESSES: z.coerce.number().int().positive().default(1),
+  // The kill switch, under OpenTelemetry's own name so that an operator who
+  // reaches for the variable they already know finds it wired up rather than
+  // ignored. It wins over `OTEL_TRACES_EXPORTER` — see `resolveTracingConfig`,
+  // where it collapses to the same `none` — because a switch that can be
+  // overridden by another setting is not one.
+  OTEL_SDK_DISABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  // What this service calls itself in a trace. It is the single most load-bearing
+  // string in the whole configuration: every backend groups, searches and alerts
+  // on `service.name`, so two deployments sharing a value are one service as far
+  // as anything downstream can tell, and a typo is a service nobody can find.
+  OTEL_SERVICE_NAME: z.string().min(1).default('boilerplate-express-ts'),
+  // The build in `service.version`, which is what makes "the p99 moved at 14:20"
+  // answerable — a trace tagged with a release can be compared against the
+  // release before it. Empty by default and omitted from the resource when
+  // empty, rather than defaulted to something like `0.0.0`: a version attribute
+  // that is the same on every deploy is worse than an absent one, because it
+  // looks like an answer. CI sets it from the commit or the tag.
+  OTEL_SERVICE_VERSION: z.string().default(''),
+  // Where finished spans go. `none` by default, and that default is deliberate
+  // for a boilerplate: `otlp` pointed at a collector nobody is running fills a
+  // developer's console with connection failures, and `console` buries the
+  // request log under a span dump. Both are worse first impressions than no
+  // tracing. A real deployment sets `otlp`.
+  OTEL_TRACES_EXPORTER: z.enum(TRACES_EXPORTERS).default('none'),
+  // The collector's *base* URL — `/v1/traces` is the protocol's path and is
+  // appended for you, including when you paste it in anyway.
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default(''),
+  // The fraction of traces this service starts that are kept, in [0, 1]. It
+  // applies only to traces that begin here: an inbound `traceparent` carries the
+  // upstream's decision and it is honoured unchanged, which is what keeps a
+  // sampled trace whole across services rather than leaving it in fragments.
+  // `1` is the right default at boilerplate scale and the first thing to lower
+  // once the export bill is real.
+  OTEL_TRACES_SAMPLER_ARG: z.coerce.number().min(0).max(1).default(1),
 });
 
 /**
@@ -570,6 +608,24 @@ const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       code: z.ZodIssueCode.custom,
       path: ['REDIS_URL'],
       message: 'is required when OUTBOX_DISPATCH_TARGET is "redis-stream"',
+    });
+  }
+
+  // The same shape as the pairing above, and it fails the same way if it is left
+  // to runtime: an OTLP exporter with no endpoint posts every batch at a URL of
+  // `/v1/traces` with no host, which the exporter logs and swallows. Tracing then
+  // *appears* to be on — the SDK started, the spans exist, the config says
+  // `otlp` — and no trace ever arrives. Refusing to boot is the only version of
+  // this an operator finds out about at the time they caused it.
+  if (
+    value.OTEL_TRACES_EXPORTER === 'otlp' &&
+    !value.OTEL_SDK_DISABLED &&
+    value.OTEL_EXPORTER_OTLP_ENDPOINT === ''
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['OTEL_EXPORTER_OTLP_ENDPOINT'],
+      message: 'is required when OTEL_TRACES_EXPORTER is "otlp"',
     });
   }
 });

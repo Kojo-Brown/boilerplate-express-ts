@@ -3,5 +3,17 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "exclude": ["node_modules", "dist", "**/*.test.ts", "jest.config.ts", "jest.setup.ts"]
+  // `*.fixture.ts` alongside `*.test.ts`: a fixture is a test's second process,
+  // not part of the service. `tracing.fixture.ts` binds two servers and exits —
+  // shipping it in `dist/` would be shipping a thing that must never be started
+  // in production. It is still typechecked, because `pnpm typecheck` uses the
+  // base config, which includes all of `src`.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.fixture.ts",
+    "jest.config.ts",
+    "jest.setup.ts"
+  ]
 }

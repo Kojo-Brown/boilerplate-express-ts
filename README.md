@@ -149,6 +149,19 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   than one, because a whole-exchange timeout has to be sized for the largest
   legitimate response and is therefore useless against an origin that sent one
   byte and died.
+- [Tracing](./docs/tracing.md) — OpenTelemetry auto-instrumentation with W3C
+  trace context: `traceparent` in and out, `baggage` carrying the correlation id
+  onward, and `traceresponse` handing the trace id back to the caller. Why the
+  bootstrap has to be the *first import* of every entry point rather than a call
+  inside it, why the sampler is parent-based (a ratio asked at every hop
+  multiplies, and four services at 0.1 keep one trace in ten thousand whole —
+  the rest arrive as fragments that look like unexplained gaps), why the `fs`
+  instrumentation is off, why the readiness probe is dropped before a span is
+  built rather than at the sampler, why the propagator list is pinned in code
+  instead of left to `OTEL_PROPAGATORS`, and why an empty carrier is the correct
+  output of an injection with no active span. Also the one assertion that cannot
+  be made under jest at all, and the version of that test which passed while
+  testing nothing.
 - [Graceful shutdown](./docs/graceful-shutdown.md) — four phases between
   `SIGTERM` and `exit`, and the two opposite ways `server.close()` on its own
   gets it wrong: it refuses traffic a load balancer is still routing in good

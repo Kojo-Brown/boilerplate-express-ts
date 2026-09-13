@@ -3,6 +3,7 @@ import session from 'express-session';
 import passport from 'passport';
 import { correlationIdMiddleware, requestLogger } from '@/middleware/logger.middleware';
 import { containerMiddleware } from '@/middleware/container.middleware';
+import { traceContextMiddleware } from '@/observability/trace.middleware';
 import { errorMiddleware } from '@/middleware/error.middleware';
 import { v1Router } from '@/routes/v1/index';
 import { registerGoogleStrategy } from '@/auth/oauth/google.strategy';
@@ -58,6 +59,12 @@ export function createApp(): express.Application {
   );
   app.use(passport.initialize());
   app.use(correlationIdMiddleware);
+  // Between the two on purpose. After `correlationIdMiddleware`, because the id
+  // it records on the span and puts into baggage does not exist until that has
+  // run; before `requestLogger`, because it is what sets `req.traceId` and
+  // everything downstream — the routers included — has to execute inside the
+  // context it makes active for the baggage to reach an outbound request.
+  app.use(traceContextMiddleware);
   app.use(requestLogger);
   // After the correlation id, so a scope can be named by the request it serves,
   // and ahead of every router, so no handler has to ask whether it has a scope.

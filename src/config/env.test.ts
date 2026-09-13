@@ -19,4 +19,23 @@ describe('env', () => {
 
     expect(env.NODE_ENV).toBe('test');
   });
+
+  it('leaves tracing off unless a deployment asks for it', () => {
+    // Asserted on `env` rather than on `resolveTracingConfig`, because what this
+    // pins is the *default*: nothing in `jest.setup.ts` turns tracing off, so if
+    // the schema's default ever became `console` or `otlp`, every suite in this
+    // repository would start patching modules and opening an exporter. The two
+    // in-process tracing suites register their own providers deliberately; none
+    // of the other hundred and fifty should acquire one by accident.
+    expect(env.OTEL_TRACES_EXPORTER).toBe('none');
+    expect(env.OTEL_SDK_DISABLED).toBe(false);
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('');
+  });
+
+  it('keeps every trace whole by default', () => {
+    // A boilerplate that ships sampling at less than 1 hands its first user an
+    // incomplete trace and no clue why. Lowering it is a decision made against a
+    // real export bill.
+    expect(env.OTEL_TRACES_SAMPLER_ARG).toBe(1);
+  });
 });
