@@ -1,3 +1,7 @@
+// First, for the reason it is first in `server.ts`: the instrumentations patch
+// their targets as those modules load, so `bullmq`'s Redis client and `pg` below
+// have to be loaded after this line. See `observability/register.ts`.
+import { tracing } from '@/observability/register';
 import { env } from '@/config/env';
 import { closePool } from '@/db/pool';
 import { selectMagicLinkDelivery } from '@/auth/strategies';
@@ -105,6 +109,10 @@ async function main(): Promise<void> {
     void worker
       .close()
       .then(() => Promise.all([deadLetterQueue.close(), closePool()]))
+      // After the resources, for the reason it is last in `server.ts`: closing
+      // them is itself instrumented, and a batch still in the processor is lost
+      // by `process.exit` below.
+      .then(() => tracing.shutdown())
       .then(() => {
         process.exit(0);
       })

@@ -6,3 +6,7 @@ coverage
 
 # macOS
 .DS_Store
+
+# Redis writes this into whatever directory it was started from, so running a
+# local server for the Redis-backed suites drops it in the repository root.
+dump.rdb

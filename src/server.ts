@@ -1,3 +1,8 @@
+// First, and it has to stay first: this import starts the tracing SDK, and every
+// instrumentation it installs patches its target module as that module is
+// loaded. `@/app` below pulls in express, passport and pg — an SDK started after
+// them patches nothing and reports no error. See `observability/register.ts`.
+import { tracing } from '@/observability/register';
 import { createApp } from '@/app';
 import { env } from '@/config/env';
 import { appContainer } from '@/container/app-container';
@@ -182,6 +187,18 @@ function shutdownPhases(): readonly ShutdownPhase[] {
   if (closeOutboxRedis !== undefined) {
     resources.push({ name: 'outbox-redis', run: () => closeOutboxRedis() });
   }
+
+  // Last of everything, and unconditional — the handle is a no-op when tracing
+  // is off, which is why it is a handle rather than a nullable.
+  //
+  // Last because every task above it can still be producing spans: the pool's
+  // own teardown is instrumented, and a trace that ends at "began closing the
+  // pool" is missing the part a slow shutdown is being investigated for. And
+  // awaited, because a `BatchSpanProcessor` holds finished spans for up to its
+  // scheduled delay — a process that exits without this loses the spans of the
+  // last requests it served, which during a bad deploy are the only ones anybody
+  // wants.
+  resources.push({ name: 'tracing', run: () => tracing.shutdown() });
 
   return [
     {
