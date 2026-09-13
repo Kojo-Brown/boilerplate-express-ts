@@ -3,6 +3,7 @@ import { SamplingDecision } from '@opentelemetry/sdk-trace-base';
 import type { Sampler } from '@opentelemetry/sdk-trace-base';
 import {
   UNTRACED_PATHS,
+  createInstrumentations,
   createPropagator,
   createSampler,
   createSpanProcessor,
@@ -219,6 +220,41 @@ describe('createPropagator', () => {
     // gained `b3` or lost `baggage` would show up here rather than in a
     // correlation that quietly stopped working.
     expect(createPropagator().fields().sort()).toEqual(['baggage', 'traceparent', 'tracestate']);
+  });
+});
+
+describe('createInstrumentations', () => {
+  /**
+   * Asserted on the config rather than end to end, because there is no end to
+   * assert on: `fs` being *off* has no observable effect, which is exactly why a
+   * regression here would ship. The `http` hook is the opposite — the integration
+   * suite proves it against a real request — so this covers the three that
+   * nothing else can.
+   */
+  const disabled = ['@opentelemetry/instrumentation-fs', '@opentelemetry/instrumentation-dns', '@opentelemetry/instrumentation-net'];
+
+  it.each(disabled)('leaves %s disabled', (name) => {
+    const found = createInstrumentations().find(
+      (instrumentation) => instrumentation.instrumentationName === name,
+    );
+
+    // Present-but-disabled and absent-entirely are both acceptable: the package
+    // decides which instrumentations it bundles, and the claim here is only that
+    // this one is not going to produce spans.
+    expect(found?.getConfig().enabled ?? false).toBe(false);
+  });
+
+  it('leaves the instrumentation this service depends on enabled', () => {
+    // The counterweight. A test that only checks what is off passes just as well
+    // when everything is off, which is a service that produces no traces at all.
+    const enabled = createInstrumentations()
+      .filter((instrumentation) => instrumentation.getConfig().enabled !== false)
+      .map((instrumentation) => instrumentation.instrumentationName);
+
+    expect(enabled).toContain('@opentelemetry/instrumentation-http');
+    expect(enabled).toContain('@opentelemetry/instrumentation-express');
+    expect(enabled).toContain('@opentelemetry/instrumentation-pg');
+    expect(enabled).toContain('@opentelemetry/instrumentation-ioredis');
   });
 });
 
