@@ -1,0 +1,17 @@
+apiVersion: 1
+
+providers:
+  - name: boilerplate-express-ts
+    type: file
+    # `false`, so an edit made in the UI cannot be saved over the file this
+    # provider loads from. The dashboard is checked in; a change to it is a
+    # commit, and a provider that let the UI win would make the repository a
+    # stale copy of whatever somebody last dragged.
+    allowUiUpdates: false
+    # Deletes the dashboard from Grafana when the file is removed, rather than
+    # leaving an orphan nobody can find the source of.
+    disableDeletion: false
+    options:
+      path: /var/lib/grafana/dashboards
+      # Mirrors any directory structure under that path as Grafana folders.
+      foldersFromFilesStructure: false

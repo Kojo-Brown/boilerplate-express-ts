@@ -1,0 +1,32 @@
+# The local scrape configuration, for `docker compose --profile observability up`.
+#
+# A real deployment does not use this file — it uses a `ServiceMonitor`, an ECS
+# service-discovery job, or whatever the platform already has. What this is for
+# is the loop that makes the checked-in dashboard verifiable: bring the API up,
+# send it some traffic, and watch the panels fill in. See `docs/metrics.md`.
+
+global:
+  # 15s is the common default and the number `grafana/provisioning/datasources`
+  # declares as `timeInterval`. The two have to agree: Grafana derives
+  # `$__rate_interval` from its copy, and a rate query over a range shorter than
+  # about four scrapes flickers as individual samples fall in and out of it.
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    env: local
+
+scrape_configs:
+  - job_name: express-api
+    # The default, restated because it is what the `job` label on every series
+    # becomes, and the dashboard's `job` variable is populated from it.
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api:4000']
+        labels:
+          service: boilerplate-express-ts
+    # `sample_limit` is the fleet-wide half of the cardinality bound that
+    # `METRICS_MAX_ROUTE_LABELS` enforces per process: past this many samples in
+    # one scrape the target is failed outright rather than ingested. It is a
+    # circuit breaker, not a budget — set it well above a healthy scrape, which
+    # for this service is a few hundred samples.
+    sample_limit: 5000

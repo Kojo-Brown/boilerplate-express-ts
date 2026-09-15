@@ -42,6 +42,7 @@
     "@opentelemetry/sdk-node": "^0.222.0",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
+    "@prometheus-io/client": "0.16.1",
     "argon2": "^0.43.0",
     "bullmq": "6.3.4",
     "express": "^5.0.1",

@@ -9,6 +9,7 @@ import { appContainer } from '@/container/app-container';
 import { EVENT_BUS, IDEMPOTENCY_STORE, OUTBOX } from '@/container/tokens';
 import { closePool } from '@/db/pool';
 import { startIdempotencyPurgeJob } from '@/idempotency';
+import { appMetrics, startProcessMetrics } from '@/metrics';
 import type { OutboxDispatcher } from '@/outbox';
 import { createEventBusDispatcher, startOutboxRelay } from '@/outbox';
 import {
@@ -27,6 +28,18 @@ import { domainEventStreamHub } from '@/sse/events.hub';
 import { attachDomainWebSocketServer } from '@/ws/ws.gateway';
 
 const app = createApp();
+
+// Heap, RSS, file descriptors, GC pauses and event-loop lag, registered on the
+// same registry `createApp` serves — so one scrape returns both the RED metrics
+// and the machine they were produced on.
+//
+// Here and not in `createApp`, by the same rule as the timers below: what these
+// describe is the *process*, and every e2e suite builds an app. They are
+// pull-based, so there is no handle to release and nothing in the shutdown
+// sequence answers to them.
+if (env.METRICS_ENABLED && env.METRICS_DEFAULT_METRICS) {
+  startProcessMetrics(appMetrics.registry);
+}
 
 /**
  * Where a claimed outbox row is delivered, which is a deployment decision

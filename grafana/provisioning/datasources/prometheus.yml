@@ -1,0 +1,24 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    # The compose service name. `proxy` access rather than `browser`, so the
+    # query goes Grafana → Prometheus inside the compose network and this
+    # hostname does not have to resolve from the operator's laptop.
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      # Matches the scrape interval in `prometheus/prometheus.yml`. Grafana uses
+      # it to pick a sensible `$__rate_interval`, which is what stops a rate
+      # query over a range shorter than four scrapes from flickering.
+      timeInterval: 15s
+      # Turns an exemplar into a link. Only reachable when a trace backend is
+      # configured too — see `docs/metrics.md`; without one the dots still
+      # appear and carry the trace id as text.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          urlDisplayLabel: View trace
