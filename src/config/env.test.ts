@@ -32,6 +32,30 @@ describe('env', () => {
     expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('');
   });
 
+  it('leaves metrics on, which is the opposite default from tracing', () => {
+    // Asserted because the asymmetry looks like an oversight and is not: a
+    // tracer with no collector patches every instrumented module and fails
+    // outward every few seconds, where a registry nobody scrapes is three
+    // counters in memory. See docs/metrics.md.
+    expect(env.METRICS_ENABLED).toBe(true);
+    expect(env.METRICS_PATH).toBe('/metrics');
+    expect(env.METRICS_DEFAULT_METRICS).toBe(true);
+  });
+
+  it('caps route labels by default rather than trusting the router', () => {
+    // The default that prevents an outage rather than enabling a graph. A
+    // boilerplate shipping this unset would hand its first user an unbounded
+    // `route` label the moment they mount a router on a parameterised path.
+    expect(env.METRICS_MAX_ROUTE_LABELS).toBe(200);
+  });
+
+  it('leaves exemplars off, because turning them on changes the wire format', () => {
+    // `true` here would switch every deployment's exposition to OpenMetrics as
+    // a side effect of upgrading, and would refuse to boot wherever tracing is
+    // off — which, per the default above, is everywhere.
+    expect(env.METRICS_EXEMPLARS).toBe(false);
+  });
+
   it('keeps every trace whole by default', () => {
     // A boilerplate that ships sampling at less than 1 hands its first user an
     // incomplete trace and no clue why. Lowering it is a decision made against a

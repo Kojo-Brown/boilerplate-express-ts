@@ -1,0 +1,589 @@
+{
+  "uid": "express-ts-red",
+  "title": "Express API — RED",
+  "description": "Rate, errors and duration for boilerplate-express-ts, plus the process metrics an investigation that starts here tends to end on. Every query reads http_requests_total and http_request_duration_seconds; nothing here needs a recording rule.",
+  "tags": ["red", "express", "http"],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "description": "A datasource variable rather than a hard-coded uid: a uid identifies one Grafana's Prometheus and this file is checked into a repository that several will import it from."
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(http_requests_total, job)",
+        "query": { "query": "label_values(http_requests_total, job)", "refId": "job" },
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(http_requests_total{job=~\"$job\"}, instance)",
+        "query": {
+          "query": "label_values(http_requests_total{job=~\"$job\"}, instance)",
+          "refId": "instance"
+        },
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "route",
+        "label": "Route",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(http_requests_total{job=~\"$job\",instance=~\"$instance\"}, route)",
+        "query": {
+          "query": "label_values(http_requests_total{job=~\"$job\",instance=~\"$instance\"}, route)",
+          "refId": "route"
+        },
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "RED",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Rate",
+      "description": "Requests per second across the selection. $__rate_interval rather than a fixed window: it adapts to the dashboard's own resolution, and a range below four scrape intervals produces a rate that flickers with every scrape that lands outside it.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 2,
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum(rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "req/s",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Errors",
+      "description": "Share of requests answered 5xx. A ratio and not a count, because a count rises with traffic and tells you nothing on its own. 4xx is excluded on purpose: a client sending a bad request is not this service failing, and mixing the two makes the number unusable as an alert.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum(rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\",status_code=~\"5..\"}[$__rate_interval])) / clamp_min(sum(rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "5xx share",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Duration (p99)",
+      "description": "Aggregated over le before the quantile is taken — histogram_quantile(0.99, sum by (le) (...)) — which is the only correct order. Averaging per-instance quantiles is a quantile of quantiles and is not a quantile of anything.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.5 },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Served under 1s",
+      "description": "The exact reading, and the one to write an SLO against: the fraction of requests that landed in the le=\"1\" bucket. Unlike a quantile it is not interpolated — it is a count over a count — which is why DURATION_BUCKETS uses round numbers a human would put in an objective.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.99 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum(rate(http_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",route=~\"$route\",le=\"1\"}[$__rate_interval])) / clamp_min(sum(rate(http_request_duration_seconds_count{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "within 1s",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate by route",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "__unmatched__ appearing here is traffic that reached no route — scanners, stale links, a client on the wrong path. __over_limit__ appearing at all means METRICS_MAX_ROUTE_LABELS was reached and something is generating route patterns.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum by (route) (rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{route}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate by status code",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "499 is not a status this service sends — it is the label recorded when the client disconnected before the response finished. A rise in it usually means this service got slow, not that the callers changed.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "5.." },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum by (status_code) (rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{status_code}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Duration quantiles",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Exemplars are on. With METRICS_EXEMPLARS=true each bucket carries the trace id of a request that landed in it, so a spike here is one click from the trace that caused it. With exemplars off the queries are unchanged and no dots appear.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "range": true,
+          "exemplar": true
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])))",
+          "legendFormat": "p90",
+          "range": true,
+          "exemplar": true
+        },
+        {
+          "refId": "C",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "range": true,
+          "exemplar": true
+        },
+        {
+          "refId": "D",
+          "editorMode": "code",
+          "expr": "sum(rate(http_request_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])) / clamp_min(sum(rate(http_request_duration_seconds_count{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "mean",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "In-flight requests",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "The panel that separates slow from stuck. During a stall nothing finishes, so the rate falls and the duration histogram records nothing at all — this is the only line that moves.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum by (method) (http_requests_in_flight{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "{{method}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Per route",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "The table to open first: rate, 5xx share and p99 side by side, so a route that is slow and a route that is failing are distinguishable at a glance instead of by hunting through the legends above.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 22 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" } },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "req/s" },
+            "properties": [
+              { "id": "unit", "value": "reqps" },
+              { "id": "decimals", "value": 2 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "5xx" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 3 },
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "color-text" }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 0.01 },
+                    { "color": "red", "value": 0.05 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p99" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 3 }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "req/s", "desc": true }]
+      },
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "route", "mode": "outer" } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Time 3": true },
+            "renameByName": {
+              "Value #A": "req/s",
+              "Value #B": "5xx",
+              "Value #C": "p99"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum by (route) (rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval]))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "expr": "sum by (route) (rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\",status_code=~\"5..\"}[$__rate_interval])) / clamp_min(sum by (route) (rate(http_requests_total{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])), 0.001)",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (route, le) (rate(http_request_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",route=~\"$route\"}[$__rate_interval])))",
+          "format": "table",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Process (USE) — where a RED investigation usually ends",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Event loop lag",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "The first answer to \"every route got slower and none of them changed\". A blocked loop delays every request equally, which is a shape no per-route panel can show.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "max by (instance) (nodejs_eventloop_lag_p99_seconds{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "p99 {{instance}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "expr": "max by (instance) (nodejs_eventloop_lag_mean_seconds{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "mean {{instance}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap and RSS",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "The second answer. A heap climbing toward its limit shows up as GC eating the event loop long before it shows up as an out-of-memory.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum by (instance) (nodejs_heap_size_used_bytes{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "heap used {{instance}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "editorMode": "code",
+          "expr": "sum by (instance) (process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "rss {{instance}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "GC time share",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Seconds of garbage collection per second — the fraction of wall clock this process spends not running your code. Derived from the GC duration histogram's _sum, so it needs no extra metric.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": [] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "expr": "sum by (kind) (rate(nodejs_gc_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{kind}}",
+          "range": true
+        }
+      ]
+    }
+  ]
+}

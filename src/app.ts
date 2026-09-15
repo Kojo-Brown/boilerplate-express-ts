@@ -12,6 +12,7 @@ import { postgresErrorTranslator } from '@/db/db.errors';
 import { multerErrorTranslator } from '@/upload/upload.errors';
 import { csvErrorTranslator } from '@/streams/csv.errors';
 import { domainEventBus } from '@/events';
+import { appMetrics, createMetricsRouter } from '@/metrics';
 import { registerDomainSubscribers } from '@/events/subscribers';
 import { attachDomainEventFeed } from '@/sse/domain-feed';
 import { domainEventStreamHub } from '@/sse/events.hub';
@@ -42,6 +43,26 @@ attachDomainEventFeed(domainEventBus, domainEventStreamHub);
 
 export function createApp(): express.Application {
   const app = express();
+
+  if (env.METRICS_ENABLED) {
+    // First of everything, and that position is the measurement. The histogram
+    // is meant to answer "how long did the client wait", so it has to be
+    // outside the body parsers, the session lookup and passport — a middleware
+    // installed after those times the handler and reports it as the request's
+    // latency, and the gap between the two is exactly where a slow session
+    // store hides.
+    app.use(appMetrics.middleware);
+
+    // Ahead of the routers and ahead of `shutdownGuard`, which is the part that
+    // matters: the scrape that explains a shutdown is the one taken during it,
+    // and an exposition sitting behind the guard would start refusing at the
+    // moment its numbers became interesting. It is mounted before the session
+    // middleware for a smaller reason — a scraper has no session, and running
+    // the store lookup for it every fifteen seconds is work for nobody. It sits
+    // ahead of `requestLogger` too, which is why a scrape leaves no access log
+    // line: one every fifteen seconds, forever, saying 200.
+    app.use(env.METRICS_PATH, createMetricsRouter(appMetrics.registry));
+  }
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));

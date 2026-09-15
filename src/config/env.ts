@@ -474,6 +474,56 @@ const envSchema = z.object({
   // `1` is the right default at boilerplate scale and the first thing to lower
   // once the export bill is real.
   OTEL_TRACES_SAMPLER_ARG: z.coerce.number().min(0).max(1).default(1),
+  // Whether the metrics endpoint is attached at all. On by default, which is
+  // the opposite of the tracing default above and for a reason: a tracer with
+  // no collector fails outward, noisily, every few seconds, while a registry
+  // nobody scrapes is three counters in memory. The cost of leaving it on is
+  // nil and the cost of it being off during the one incident somebody needed a
+  // graph is not.
+  METRICS_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Where the exposition lives. `/metrics` is the convention every scraper's
+  // default job configuration assumes, so changing it means changing the
+  // scrape config too. It is deliberately *not* under `/v1`: the exposition is
+  // not part of this service's API, it is not versioned with it, and nothing
+  // that consumes the API should discover it by walking the version prefix.
+  METRICS_PATH: z.string().startsWith('/').default('/metrics'),
+  // Whether the Node and process collectors are started — heap, RSS, file
+  // descriptors, GC pauses and event-loop lag. They are the other half of every
+  // "the API got slow and no endpoint changed" investigation, and they cost one
+  // pass over `process` per scrape rather than anything per request.
+  //
+  // Started by `server.ts` and not by `createApp`, for the same reason the
+  // purge job and the outbox relay are: they describe the *process*, and an
+  // e2e suite that built an app has no business registering them.
+  METRICS_DEFAULT_METRICS: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // The ceiling on distinct `route` label values. This is the one setting here
+  // that prevents an outage rather than enabling a graph: every distinct label
+  // combination is a time series held in this process *and* in the scraper's
+  // head, forever, and a route label derived from a URL rather than from a
+  // route pattern grows with the number of URLs anyone has ever requested. Past
+  // the cap new patterns are folded into one bucket instead — see
+  // `ROUTE_OVER_LIMIT`. 200 is far above what any router in this repository can
+  // produce and far below what hurts.
+  METRICS_MAX_ROUTE_LABELS: z.coerce.number().int().positive().default(200),
+  // Whether latency observations carry an OpenMetrics exemplar naming the trace
+  // they came from — which is what turns a spike on a latency panel into a
+  // click through to the request that caused it.
+  //
+  // Off by default because it is not free in the way the rest of this block is:
+  // it switches the whole exposition to OpenMetrics (`application/openmetrics-
+  // text`), which Prometheus negotiates happily and some older scrapers and
+  // every `curl | grep` habit do not. Turn it on once you know what is reading
+  // the endpoint.
+  METRICS_EXEMPLARS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 /**
@@ -626,6 +676,40 @@ const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       code: z.ZodIssueCode.custom,
       path: ['OTEL_EXPORTER_OTLP_ENDPOINT'],
       message: 'is required when OTEL_TRACES_EXPORTER is "otlp"',
+    });
+  }
+
+  // An exemplar is a pointer to a trace, so it is worth exactly as much as the
+  // trace it points at. With no exporter there is no trace to reach: every
+  // observation would be recorded with no exemplar at all, the exposition would
+  // switch to OpenMetrics for nothing, and the operator who set this would have
+  // a latency panel whose exemplar dots never appear and no message explaining
+  // why. Same argument as the endpoint check above — a setting that silently
+  // does nothing is the one nobody catches.
+  if (
+    value.METRICS_EXEMPLARS &&
+    (value.OTEL_SDK_DISABLED || value.OTEL_TRACES_EXPORTER === 'none')
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['METRICS_EXEMPLARS'],
+      message:
+        'requires tracing to be on (OTEL_TRACES_EXPORTER other than "none", and OTEL_SDK_DISABLED false), ' +
+        'otherwise every exemplar would name a trace that was never exported',
+    });
+  }
+
+  // `/v1` is the API's prefix and the exposition is not part of the API. Under
+  // it, the endpoint would be versioned with routes it has nothing to do with,
+  // it would sit behind whatever the gateway applies to the version prefix, and
+  // — the concrete failure — it would be reachable by anything walking the
+  // documented API surface. It is also the one path this service refuses to
+  // measure, so a collision would silently delete a real route's metrics.
+  if (value.METRICS_PATH === '/v1' || value.METRICS_PATH.startsWith('/v1/')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['METRICS_PATH'],
+      message: 'must not sit under /v1: the metrics exposition is not part of the versioned API',
     });
   }
 });

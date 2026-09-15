@@ -162,6 +162,23 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   output of an injection with no active span. Also the one assertion that cannot
   be made under jest at all, and the version of that test which passed while
   testing nothing.
+- [Metrics](./docs/metrics.md) — RED on a Prometheus endpoint, with a Grafana
+  dashboard checked in at `grafana/dashboards/red-dashboard.json` and a compose
+  profile that will actually show it to you. Why rate and errors are one counter
+  and the in-flight gauge is not derivable from either (during a stall the rate
+  *falls* and the histogram records nothing, because nothing has finished), why
+  `status_code` is on the counter and deliberately not on the histogram, and why
+  the duration buckets are round numbers an SLO would use rather than a
+  distribution somebody measured once. Also the label reconstruction that every
+  naive version of this middleware gets wrong: `req.baseUrl` and `req.params`
+  are restored as the router stack unwinds, so a `finish` listener that reads
+  them labels `GET /v1/users/:id` as `/:id` for every error and every async
+  handler — which is most of them — while passing any test written with a
+  synchronous one. Why the readiness probe is not measured (it answers 503 for
+  the whole drain window by design, so measuring it paints a 5xx spike on every
+  rolling deploy), why an abandoned request is recorded as 499 rather than as
+  the 200 `statusCode` still defaults to, and what an exemplar buys once the
+  graph and the trace finally share an identifier.
 - [Graceful shutdown](./docs/graceful-shutdown.md) — four phases between
   `SIGTERM` and `exit`, and the two opposite ways `server.close()` on its own
   gets it wrong: it refuses traffic a load balancer is still routing in good

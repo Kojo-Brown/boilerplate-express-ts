@@ -48,8 +48,14 @@ import type { TracesExporter } from '@/observability/tracing.types';
  * Dropped at the `http` instrumentation rather than by the sampler on purpose:
  * an unsampled span is still created, still costs a context, and still has to be
  * carried to the sampler. `ignoreIncomingRequestHook` runs before any of that.
+ *
+ * The metrics exposition is here for a different reason and the same effect: a
+ * scrape is a fixed-rate GET that reads three counters, so tracing it produces
+ * one identical span every fifteen seconds forever. It also makes the export
+ * bill a function of the scrape interval, which is a knob nobody expects to be
+ * connected to tracing.
  */
-export const UNTRACED_PATHS: readonly string[] = ['/v1/health'];
+export const UNTRACED_PATHS: readonly string[] = ['/v1/health', env.METRICS_PATH];
 
 /**
  * `deployment.environment.name`, spelled out rather than imported.

@@ -77,6 +77,13 @@ services:
       # docs/graceful-shutdown.md.
       SHUTDOWN_DRAIN_DELAY_MS: ${SHUTDOWN_DRAIN_DELAY_MS:-0}
       SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-25000}
+      # On by default in the schema; restated here because the `prometheus`
+      # service below scrapes it, and a stack whose scrape target is off by
+      # configuration is a target that reads as down.
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      # Off by default. Turning it on also needs tracing on — `env.ts` refuses
+      # the combination otherwise — and switches the exposition to OpenMetrics.
+      METRICS_EXEMPLARS: ${METRICS_EXEMPLARS:-false}
     # Docker's default is 10 seconds, which is *below* the shutdown budget above:
     # the process would be drained, mid-sequence, by a `SIGKILL` arriving before
     # its own deadline — the exact failure the budget exists to stay ahead of.
@@ -91,6 +98,61 @@ services:
       retries: 3
       start_period: 20s
 
+  # Prometheus and Grafana are behind a profile, so `docker compose up` is
+  # unchanged: they start only for `docker compose --profile observability up`.
+  # That is deliberate — the API's own metrics endpoint needs neither of them,
+  # and a developer running the API should not be made to run a monitoring stack
+  # to do it. What the profile buys is the loop that makes the checked-in
+  # dashboard verifiable rather than merely plausible.
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    profiles: ['observability']
+    restart: unless-stopped
+    depends_on:
+      - api
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      # Two weeks, because the volume is a developer's disk. Production
+      # retention is a decision for whatever runs Prometheus there.
+      - '--storage.tsdb.retention.time=14d'
+      # Exemplars are stored only when this is on: without it the trace ids the
+      # API attaches with METRICS_EXEMPLARS=true are parsed and dropped, and the
+      # latency panels come up with no dots and no explanation.
+      - '--enable-feature=exemplar-storage'
+    ports:
+      - '${PROMETHEUS_PORT:-9090}:9090'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:13.0.9
+    profiles: ['observability']
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      # Required rather than defaulted, matching how every other credential in
+      # this file is handled: a compose stack that comes up with a password
+      # checked into a repository is one somebody eventually exposes.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      # Opens the dashboard on the URL below without a login. Local only — it is
+      # scoped to `Viewer`, and the whole stack is behind a compose profile on a
+      # developer's machine.
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports:
+      - '${GRAFANA_PORT:-3001}:3000'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # The dashboard directory the file provider in
+      # `grafana/provisioning/dashboards/dashboards.yml` reads.
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:
+  grafana_data:
