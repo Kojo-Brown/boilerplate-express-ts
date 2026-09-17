@@ -41,7 +41,14 @@ USER expressts
 
 EXPOSE 4000
 
+# Liveness and not readiness, which is the opposite of what a load balancer
+# should poll. Docker restarts an unhealthy container, so this is a liveness
+# probe by consequence whatever it is pointed at — and pointed at `/ready` it
+# would restart the API whenever Postgres had a bad minute, repeatedly, for a
+# fault restarting cannot fix. `--timeout` exceeds HEALTH_CHECK_TIMEOUT_MS, but
+# only readiness runs checks; `/live` never touches a dependency at all.
+# See docs/health-checks.md.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:4000/v1/health || exit 1
+  CMD wget -qO- http://localhost:4000/v1/health/live || exit 1
 
 CMD ["node", "dist/server.js"]

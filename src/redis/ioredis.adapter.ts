@@ -219,7 +219,9 @@ function connectionOptions(): RedisOptions {
  * call sites that must be kept in agreement, and the failure when they drift is
  * a consumer that reads from one instance and acknowledges to another.
  */
-export function createStreamConnections(url: string): StreamConnections & { close(): Promise<void> } {
+export function createStreamConnections(
+  url: string,
+): StreamConnections & { close(): Promise<void>; ping(): Promise<string> } {
   const commands = new Redis(url, connectionOptions());
   const blocking = commands.duplicate();
 
@@ -241,6 +243,28 @@ export function createStreamConnections(url: string): StreamConnections & { clos
   return {
     commands: new IoredisStreamCommands(commands, whenReady(commands)),
     blocking: new IoredisStreamCommands(blocking, whenReady(blocking)),
+    /**
+     * Liveness of the connection, for `createRedisCheck`.
+     *
+     * Here and not on `StreamCommands`, deliberately: that port is seven stream
+     * operations and a health probe is not one of them — widening it would make
+     * every future implementation of it answer a question it has nothing to do
+     * with. This is a property of *this connection*, which is the thing the
+     * caller holds.
+     *
+     * Issued on `commands` and never on `blocking`, which spends most of its
+     * life parked inside an `XREADGROUP`: a PING behind that block measures
+     * `blockMs`, not Redis.
+     *
+     * It does not wait on `whenReady` the way `send` does. That wait exists so
+     * the first command after construction is not lost, and a health check is
+     * the one caller for which "not connected yet" is an answer rather than a
+     * problem — `enableOfflineQueue: false` makes it a fast rejection instead of
+     * a wait, which is exactly what a probe wants.
+     */
+    ping(): Promise<string> {
+      return commands.ping();
+    },
     async close(): Promise<void> {
       // `quit` sends QUIT and waits for the server to close, which flushes any
       // command still in flight — an `XACK` issued by the last handler, most

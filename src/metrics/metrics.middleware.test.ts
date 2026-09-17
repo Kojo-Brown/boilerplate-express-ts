@@ -182,6 +182,23 @@ describe('createMetricsMiddleware', () => {
     expect(exposition).toContain('route="/v1/users/:id"');
   });
 
+  it('skips the subtree beneath a skipped path, but not a path that merely shares its start', async () => {
+    // `/v1/health` is a router with `/live` and `/ready` under it, and those are
+    // the paths a kubelet polls: an exclusion that stopped at the root would
+    // measure them at probe rates, which is the whole reason the root is
+    // excluded. Segment aware, so `/v1/healthcheck-admin` keeps its series.
+    const { app, registry } = harness({ ignoredPaths: ['/v1/health'] });
+
+    await request(app).get('/v1/health/ready').expect(404);
+    await request(app).get('/v1/healthcheck-admin').expect(404);
+
+    const exposition = await registry.metrics();
+    expect(exposition).not.toContain('/v1/health/ready');
+    // Unrouted, so it lands in the unmatched bucket rather than under its own
+    // label — the assertion is that it was measured at all.
+    expect(exposition).toContain(`route="${ROUTE_UNMATCHED}"`);
+  });
+
   it('counts a query string under the same route as the bare path', async () => {
     const { app, registry } = harness({ ignoredPaths: ['/metrics'] });
 

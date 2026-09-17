@@ -83,12 +83,18 @@ describe('GET /metrics', () => {
     expect(counterValue(await scrape(), series)).toBe(before + 2);
   });
 
-  it('does not measure the exposition or the health probe', async () => {
+  it('does not measure the exposition or any of the health probes', async () => {
+    // All three: the alias and the two paths a prober is actually pointed at.
+    // `/v1/health/ready` is the one that would otherwise reappear on the error
+    // panel of every rolling deploy, since it answers 503 for the whole drain
+    // window by design.
     await request(app).get('/v1/health').expect(200);
+    await request(app).get('/v1/health/live').expect(200);
+    await request(app).get('/v1/health/ready').expect(200);
     const exposition = await scrape();
 
     expect(exposition).not.toContain('route="/metrics"');
-    expect(exposition).not.toContain('route="/v1/health"');
+    expect(exposition).not.toContain('/v1/health');
   });
 
   it('leaves the exposition out of tracing too', () => {

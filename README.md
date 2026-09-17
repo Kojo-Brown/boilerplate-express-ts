@@ -179,6 +179,21 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   rolling deploy), why an abandoned request is recorded as 499 rather than as
   the 200 `statusCode` still defaults to, and what an exemplar buys once the
   graph and the trace finally share an identifier.
+- [Health checks](./docs/health-checks.md) — `GET /v1/health/live` and
+  `GET /v1/health/ready`, and why they cannot be one endpoint: the correct
+  answer to "alive" and to "send me traffic" is *opposite* during a drain (a
+  kubelet that fails liveness restarts the container in the middle of its own
+  shutdown) and during a dependency outage (a liveness probe wired to dependency
+  checks restarts every replica at once for a database that is down for all of
+  them, repeatedly, with the reconnect storm in the way of recovery). Why
+  Postgres is `critical` and Redis is `optional` — the test being whether
+  routing to a different replica would help, which for a Redis every replica
+  shares is no — and why `degraded` has to be a third status at 200 rather than
+  a choice between hiding a fault and shedding traffic for one that cannot be
+  routed around. Also the deadline enforced twice because a signal only bounds a
+  check that reads it, the pool client that arrives after the probe gave up and
+  is one slot gone forever if nobody releases it, and why the report cache
+  collapses pollers without ever being allowed to answer for the drain.
 - [Graceful shutdown](./docs/graceful-shutdown.md) — four phases between
   `SIGTERM` and `exit`, and the two opposite ways `server.close()` on its own
   gets it wrong: it refuses traffic a load balancer is still routing in good

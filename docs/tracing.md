@@ -141,7 +141,7 @@ trace context, or work started on a timer.
 | --- | --- |
 | `fs` | Every `require` and every file read becomes a span — thousands per request, and the request's own span is buried in a trace no UI can render. |
 | `dns`, `net` | Under a connection pool they describe the pool rather than the request, and the `http` and `pg` spans already carry the peer. |
-| `GET /v1/health` | The highest-volume endpoint most services have, at one span apiece saying 200. Dropped at `ignoreIncomingRequestHook`, before a span is built at all — not at the sampler, which would still pay for it. |
+| `GET /v1/health` (and everything under it) | The highest-volume endpoint most services have, at one span apiece saying 200. Dropped at `ignoreIncomingRequestHook`, before a span is built at all — not at the sampler, which would still pay for it. |
 
 The propagator list is pinned in code rather than left to `OTEL_PROPAGATORS`.
 The composite — `tracecontext` plus `baggage` — is also the SDK's default, so the

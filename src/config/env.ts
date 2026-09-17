@@ -524,6 +524,49 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // How long one readiness dependency check may take before it is recorded as
+  // failed. Per check and not for the set, because the checks run concurrently
+  // — see `runChecks`, where that choice is what keeps the worst case equal to
+  // this number rather than to this number times however many dependencies a
+  // deployment has registered.
+  //
+  // It has to stay comfortably below the probe's own `timeoutSeconds`, and the
+  // default assumes the usual 5s. The failure when it does not is quiet and
+  // expensive: the prober gives up first, so every dependency incident is
+  // reported as "probe timed out" with no indication of *which* dependency, and
+  // the handlers keep running with nobody reading them.
+  HEALTH_CHECK_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
+  // How long a readiness report may be reused before the dependencies are asked
+  // again.
+  //
+  // This is not a way to probe less often and must not be raised to become one:
+  // a cached report is stale in both directions, so this is also how long a
+  // failed dependency keeps being reported healthy, and how long a recovered
+  // one keeps being reported down. What it is for is collapsing the *pollers* —
+  // a kubelet, every balancer node, a mesh sidecar and an uptime monitor all
+  // asking on their own schedules — into one set of checks. An order of
+  // magnitude below the probe interval does that and costs nothing; at the
+  // probe interval it silently halves the rate at which anything is noticed.
+  //
+  // 0 disables the cache. `createReadinessProbe` still collapses *concurrent*
+  // probes, which is the half that matters during an incident.
+  HEALTH_CACHE_TTL_MS: z.coerce.number().int().nonnegative().default(1_000),
+  // Whether a failing check's error text reaches the response body.
+  //
+  // Off by default because a readiness endpoint is routinely reachable from
+  // further away than the API it guards — it is what a balancer, a mesh and an
+  // uptime monitor poll, and those are frequently outside whatever fronts
+  // `/v1` — while a `pg` connection failure names the host, port and database
+  // it could not reach. Which check failed is in the response either way; why
+  // it failed is in this process's logs, written once per transition.
+  HEALTH_EXPOSE_ERRORS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  // What an unready answer tells the caller to wait, in seconds. Never 0: a
+  // prober told to retry immediately reports this instance flapping rather than
+  // unavailable.
+  HEALTH_RETRY_AFTER_SECONDS: z.coerce.number().int().positive().default(5),
 });
 
 /**

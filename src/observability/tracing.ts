@@ -14,6 +14,10 @@ import {
 import type { Sampler, SpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { env } from '@/config/env';
+// A leaf module with no side effects, which is a requirement and not a
+// coincidence: this file is reached from `observability/register.ts`, whose
+// whole contract is that it loads before express, pg and ioredis do.
+import { matchesAnyPath } from '@/lib/path-prefix';
 import type { TracesExporter } from '@/observability/tracing.types';
 
 /**
@@ -54,6 +58,12 @@ import type { TracesExporter } from '@/observability/tracing.types';
  * one identical span every fifteen seconds forever. It also makes the export
  * bill a function of the scrape interval, which is a knob nobody expects to be
  * connected to tracing.
+ *
+ * Both entries are *subtrees*: `/v1/health` is a router, and `/live` and
+ * `/ready` beneath it are the paths a kubelet is actually pointed at — an
+ * exclusion that stopped at the root would cover the alias and export a span
+ * per probe for the two endpoints doing the polling. Matching is segment aware,
+ * so the prefix cannot swallow `/v1/healthcheck-admin`; see `isUnderPath`.
  */
 export const UNTRACED_PATHS: readonly string[] = ['/v1/health', env.METRICS_PATH];
 
@@ -115,7 +125,10 @@ export function shouldTracePath(path: string | undefined): boolean {
   // Compared against the path alone: `/v1/health?probe=readiness` is the same
   // endpoint, and a query string is something a prober can add at any time.
   const pathname = path.split('?')[0] ?? path;
-  return !UNTRACED_PATHS.includes(pathname);
+  // Subtree and not equality: `/v1/health` is a router now, and `/live` and
+  // `/ready` under it are polled harder than the alias at its root. Segment
+  // aware, so `/v1/healthcheck-admin` keeps its traces — see `isUnderPath`.
+  return !matchesAnyPath(pathname, UNTRACED_PATHS);
 }
 
 /** The settings this file reads, named so a test can supply them without `env`. */
