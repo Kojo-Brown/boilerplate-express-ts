@@ -7,7 +7,8 @@ import { createApp } from '@/app';
 import { env } from '@/config/env';
 import { appContainer } from '@/container/app-container';
 import { EVENT_BUS, IDEMPOTENCY_STORE, OUTBOX } from '@/container/tokens';
-import { closePool } from '@/db/pool';
+import { closePool, getPool } from '@/db/pool';
+import { registerProcessHealthChecks } from '@/health';
 import { startIdempotencyPurgeJob } from '@/idempotency';
 import { appMetrics, startProcessMetrics } from '@/metrics';
 import type { OutboxDispatcher } from '@/outbox';
@@ -61,7 +62,12 @@ if (env.METRICS_ENABLED && env.METRICS_DEFAULT_METRICS) {
  * flushes the `XADD` the last relay tick issued, and dropping the socket instead
  * loses an event that the row it came from has already been deleted for.
  */
-function outboxDispatcher(): { dispatcher: OutboxDispatcher; close?: () => Promise<void> } {
+function outboxDispatcher(): {
+  dispatcher: OutboxDispatcher;
+  close?: () => Promise<void>;
+  /** Exposed for the readiness check — present only when a connection exists. */
+  ping?: () => Promise<unknown>;
+} {
   if (env.OUTBOX_DISPATCH_TARGET === 'bus') {
     return { dispatcher: createEventBusDispatcher(appContainer.resolve(EVENT_BUS)) };
   }
@@ -78,6 +84,7 @@ function outboxDispatcher(): { dispatcher: OutboxDispatcher; close?: () => Promi
       }),
     ),
     close: () => connections.close(),
+    ping: () => connections.ping(),
   };
 }
 
@@ -122,6 +129,31 @@ const relayJob =
         dispatchTimeoutMs: env.OUTBOX_DISPATCH_TIMEOUT_MS,
       });
 
+/**
+ * What `/v1/health/ready` asks about, registered here and not in `createApp()`.
+ *
+ * Same rule as the two timers above: a check holds a connection to a real
+ * dependency, and every e2e suite in this repository builds an app. An app
+ * built by a test gets a readiness endpoint with nothing registered, which
+ * answers `ok` — correct for a process that depends on nothing.
+ *
+ * Before `listen`, so the first probe to arrive is answered by the full set. It
+ * may come later than `createApp()` because the probe reads the registry on
+ * every evaluation rather than capturing it; see `ReadinessProbeOptions`.
+ *
+ * Postgres is `critical` by default and Redis is `optional` by default, and
+ * those defaults are arguments rather than conventions — `redis.check.ts` has
+ * the one that matters, which is that gating readiness on a dependency shared
+ * by every replica empties the load balancer for a fault that moving traffic
+ * cannot route around.
+ *
+ * Redis is registered only where a connection already exists. A check that
+ * opened its own would be measuring a connection nothing else uses, and would
+ * make a deployment with `OUTBOX_DISPATCH_TARGET=bus` — which never speaks to
+ * Redis — report on a dependency it does not have.
+ */
+registerProcessHealthChecks({ pool: getPool, redisPing: outbox?.ping });
+
 const server = app.listen(env.PORT, () => {
   console.log(`Server running on http://localhost:${String(env.PORT)}/v1`);
 });
@@ -146,10 +178,12 @@ if (wsServer !== null) {
 /**
  * Shutdown, in four phases, and the order is the whole design.
  *
- * **1. unready.** `SIGTERM` has landed; `/v1/health` has already gone 503,
- * because `createGracefulShutdown` moves the lifecycle to `draining` before the
- * first task runs. Nothing is closed yet and every request is served exactly as
- * before. The wait is the balancer's chance to notice — see `waitTask`.
+ * **1. unready.** `SIGTERM` has landed; `/v1/health/ready` has already gone
+ * 503, because `createGracefulShutdown` moves the lifecycle to `draining`
+ * before the first task runs — and `/v1/health/live` has not, deliberately, or
+ * a kubelet would restart the container in the middle of its own drain. Nothing
+ * is closed yet and every request is served exactly as before. The wait is the
+ * balancer's chance to notice — see `waitTask`.
  *
  * **2. long-lived.** SSE streams and WebSockets, which is everything that never
  * ends on its own. They have to go before the listener is drained, or the drain

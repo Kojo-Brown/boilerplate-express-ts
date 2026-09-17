@@ -38,6 +38,12 @@ import { createMetricsMiddleware } from '@/metrics/metrics.middleware';
  * 5xx spike on the error panel of a service that never failed a request. An
  * error rate that cries wolf on every deploy is an error rate nobody reads.
  *
+ * Both entries cover their subtree. `/v1/health` is a router now — `/live`,
+ * `/ready` and the alias at its root — and an exclusion that matched the root
+ * alone would leave the two paths a kubelet is configured with measured at
+ * probe rates, which is the whole problem restated. The match is segment aware,
+ * so `/v1/healthcheck-admin` keeps its series; see `isUnderPath`.
+ *
  * The same two paths are excluded from tracing, for related but not identical
  * reasons — `UNTRACED_PATHS` in `@/observability/tracing`. Kept as two lists
  * because they answer two questions: a deployment that wanted probe latency

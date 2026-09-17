@@ -120,12 +120,14 @@ labelled by its own pattern alone rather than by a guessed prefix.
 
 ## What is not measured
 
-`/metrics` and `/v1/health`, and the second one is the one worth explaining.
+`/metrics` and `/v1/health` — the latter as a subtree, so `/v1/health/live`
+and `/v1/health/ready` are covered too, which is what a prober is actually
+pointed at. The health entry is the one worth explaining.
 
 A readiness probe outnumbers real traffic in anything but a busy API, so its
 rate swamps the rate panel and its count dominates the error *denominator*. But
 the reason it is excluded rather than merely noisy is what it does during a
-shutdown: `/v1/health` answers 503 for the whole drain window **by design** (see
+shutdown: `/v1/health/ready` answers 503 for the whole drain window **by design** (see
 `docs/graceful-shutdown.md`), so with it measured every rolling deploy paints a
 5xx spike on the error panel of a service that never failed a request. An error
 rate that cries wolf on every deploy is an error rate nobody reads.

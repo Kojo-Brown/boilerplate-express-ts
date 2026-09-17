@@ -55,7 +55,9 @@ second later.
 ```
 SIGTERM
   │
-  ├─ 1. unready ───────── /v1/health → 503. Everything else served normally.
+  ├─ 1. unready ───────── /v1/health/ready → 503 (and /live stays 200, or a
+  │                       kubelet would restart this mid-drain). Everything
+  │                       else served normally.
   │                       Waits SHUTDOWN_DRAIN_DELAY_MS for the balancer to notice.
   │
   ├─ 2. long-lived ────── SSE streams closed, WebSockets closed with 1001.
@@ -82,7 +84,7 @@ It does no teardown at all. It flips readiness and waits.
 { name: 'unready', tasks: [waitTask('load-balancer-drain', env.SHUTDOWN_DRAIN_DELAY_MS)] }
 ```
 
-Removing it reintroduces fault 1 above. `GET /v1/health` answers 503
+Removing it reintroduces fault 1 above. `GET /v1/health/ready` answers 503
 `SERVER_DRAINING` from the first instant of shutdown, before anything has
 closed, and the instance keeps serving every request normally for the whole
 window. The gap between "stopped advertising" and "stopped listening" is what
@@ -91,6 +93,8 @@ still able to answer.
 
 Size it above the readiness probe's period times its failure threshold. The
 default, 5s, covers a Kubernetes probe on a 2s period; a 10s period wants 15.
+Liveness is not part of this arithmetic and must not be pointed at the same
+path — see [health checks](./health-checks.md).
 
 The wait is deliberately **not** abortable by the shutdown budget. A wait the
 deadline can cut short is a wait that does not reliably happen, and the

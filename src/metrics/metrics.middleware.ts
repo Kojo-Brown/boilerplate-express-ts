@@ -1,6 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { EXEMPLAR_TRACE_ID_LABEL } from '@/metrics/http-metrics';
 import type { HttpMetrics } from '@/metrics/http-metrics';
+import { matchesAnyPath } from '@/lib/path-prefix';
 import { methodLabel } from '@/metrics/labels';
 import type { RouteLabeller } from '@/metrics/labels';
 import { activeTraceContext } from '@/observability/propagation';
@@ -40,16 +41,22 @@ export interface MetricsMiddlewareOptions {
    * Two kinds of traffic belong here and both would otherwise drown the
    * dashboard rather than inform it — see `UNMEASURED_PATHS`, which is where
    * the specific ones are chosen and argued.
+   *
+   * Each entry excludes its own subtree, not just itself.
    */
   readonly ignoredPaths?: readonly string[];
 }
 
 export function createMetricsMiddleware(options: MetricsMiddlewareOptions): RequestHandler {
   const { metrics, labeller } = options;
-  const ignored = new Set(options.ignoredPaths ?? []);
+  const ignored = options.ignoredPaths ?? [];
 
   return function httpMetricsMiddleware(req: Request, res: Response, next: NextFunction): void {
-    if (ignored.has(req.path)) {
+    // Each entry covers its subtree, which is what `/v1/health` needs now that
+    // it is a router with `/live` and `/ready` under it — a set membership test
+    // would have excluded the alias and measured the two endpoints the probers
+    // are pointed at. Segment aware, so `/v1/healthcheck-admin` is unaffected.
+    if (matchesAnyPath(req.path, ignored)) {
       next();
       return;
     }

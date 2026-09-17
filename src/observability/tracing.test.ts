@@ -160,9 +160,19 @@ describe('shouldTracePath', () => {
     expect(shouldTracePath('/v1/health?probe=readiness')).toBe(false);
   });
 
+  it('skips the probes underneath it', () => {
+    // `/v1/health` is a router now, and these two are the paths a kubelet is
+    // actually configured with — an exclusion that matched only the root would
+    // have covered the alias nobody polls and exported a span per probe for the
+    // endpoints that are polled.
+    expect(shouldTracePath('/v1/health/live')).toBe(false);
+    expect(shouldTracePath('/v1/health/ready')).toBe(false);
+  });
+
   it('traces a path that merely starts with an untraced one', () => {
-    // Exact match, not prefix: `/v1/healthcheck-admin` is somebody's endpoint and
-    // dropping it would be a gap nobody could explain from the config.
+    // Segment-aware prefix, not a string prefix: `/v1/healthcheck-admin` is
+    // somebody's endpoint and dropping it would be a gap nobody could explain
+    // from the config.
     expect(shouldTracePath('/v1/healthcheck-admin')).toBe(true);
   });
 

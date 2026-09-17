@@ -62,4 +62,36 @@ describe('env', () => {
     // real export bill.
     expect(env.OTEL_TRACES_SAMPLER_ARG).toBe(1);
   });
+
+  it('gives a readiness check less time than any prober will give the probe', () => {
+    // The number that has to stay under the probe's own `timeoutSeconds`, whose
+    // usual value is 5. When it does not, the prober gives up first and every
+    // dependency incident is reported as "probe timed out" with no indication
+    // of which dependency — the one failure of this subsystem that produces no
+    // information at all. Per check rather than for the set, because the checks
+    // run concurrently.
+    expect(env.HEALTH_CHECK_TIMEOUT_MS).toBe(2_000);
+  });
+
+  it('caches a readiness report for long enough to collapse pollers and no longer', () => {
+    // A cached report is stale in both directions, so this is also how long a
+    // failed dependency keeps being reported healthy. An order of magnitude
+    // below the probe interval merges the kubelet, the balancer nodes, the mesh
+    // and the uptime monitor into one set of checks; at the probe interval it
+    // silently halves the rate at which anything is noticed.
+    expect(env.HEALTH_CACHE_TTL_MS).toBe(1_000);
+  });
+
+  it('keeps dependency failure reasons out of the response by default', () => {
+    // A readiness endpoint is routinely reachable from further away than the
+    // API it guards, and a `pg` connection error names the host, port and
+    // database it could not reach.
+    expect(env.HEALTH_EXPOSE_ERRORS).toBe(false);
+  });
+
+  it('never tells a prober to retry immediately', () => {
+    // 0 reads as flapping rather than as leaving, on both the drain answer and
+    // the dependency one.
+    expect(env.HEALTH_RETRY_AFTER_SECONDS).toBeGreaterThan(0);
+  });
 });
