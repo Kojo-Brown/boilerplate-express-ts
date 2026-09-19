@@ -19,6 +19,12 @@ import { domainEventStreamHub } from '@/sse/events.hub';
 import { env } from '@/config/env';
 import { appLifecycle, shutdownGuard } from '@/shutdown';
 import { sendFail } from '@/lib/response';
+import {
+  corsMiddleware,
+  corsPolicyFromEnv,
+  securityHeaderPolicyFromEnv,
+  securityHeaders,
+} from '@/security';
 
 registerGoogleStrategy();
 
@@ -44,6 +50,15 @@ attachDomainEventFeed(domainEventBus, domainEventStreamHub);
 export function createApp(): express.Application {
   const app = express();
 
+  // Ahead of everything below, including the metrics timer whose own comment
+  // insists on being first. What this adds to the measurement is a handful of
+  // `setHeader` calls, which is under the resolution of the histogram's
+  // smallest bucket; what it buys is that no response can escape the headers —
+  // not the metrics exposition, not the 404 handler, not a refusal from the
+  // shutdown guard. A security header that is present on the responses someone
+  // remembered is not a policy.
+  app.use(securityHeaders(securityHeaderPolicyFromEnv()));
+
   if (env.METRICS_ENABLED) {
     // First of everything, and that position is the measurement. The histogram
     // is meant to answer "how long did the client wait", so it has to be
@@ -63,6 +78,16 @@ export function createApp(): express.Application {
     // line: one every fifteen seconds, forever, saying 200.
     app.use(env.METRICS_PATH, createMetricsRouter(appMetrics.registry));
   }
+
+  // After the metrics timer and before the body parsers and `session()`. The
+  // second half is the point: a preflight carries no body worth parsing and
+  // belongs to no session, so answering it here means a cross-origin client's
+  // extra round trip per write does not also become a lookup in the session
+  // store. The first half is why it is not higher still — a preflight is real
+  // traffic a cross-origin frontend pays for, and mounted above the timer
+  // every one of them would be invisible in the latency histogram. It stays
+  // below `securityHeaders` either way, so the 204 it writes carries them.
+  app.use(corsMiddleware(corsPolicyFromEnv()));
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));

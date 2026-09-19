@@ -203,6 +203,14 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   removed, why the drain window is deliberately the one wait the shutdown budget
   cannot cut short, why sockets are `end()`ed rather than destroyed, and why the
   pool closes last.
+- [Security headers and CORS](./docs/security-headers.md) — helmet with a
+  `default-src 'none'` policy, HSTS, and an exact-match origin allowlist driven
+  by `CORS_ORIGIN` — which until now was documented as the API's allowlist and
+  read by nothing but the WebSocket gateway. Why the three directives that do
+  not fall back to `default-src` are spelled out, why a disallowed *preflight*
+  is refused while a disallowed *actual request* is served without the headers,
+  why `Vary: Origin` belongs on responses that carried no `Origin`, and why
+  `CORS_ORIGIN=*` with credentials fails at boot.
 
 ## Authentication
 

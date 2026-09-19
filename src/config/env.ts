@@ -14,7 +14,103 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   DATABASE_URL: z.string().min(1),
+  // The browser origins allowed to read a cross-origin response, comma
+  // separated, or `*` for any. It predates the middleware that enforces it —
+  // until `@/security/cors` existed this was read only by the WebSocket
+  // gateway, so a deployment could set it, believe its REST surface was
+  // restricted, and be wrong. It is the same answer to the same question for
+  // both surfaces, which is why the gateway still falls back to it rather than
+  // growing a second list.
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
+  // Methods advertised on a preflight. This is documentation for the browser,
+  // not enforcement: a method missing here is refused by the browser before the
+  // request is sent, and a method present here is still subject to routing and
+  // authorisation like any other. Narrow it when a deployment's clients only
+  // ever read.
+  CORS_ALLOWED_METHODS: z.string().default('GET,HEAD,POST,PUT,PATCH,DELETE'),
+  // Request headers a browser client may set. The defaults are the ones this
+  // API actually reads off a cross-origin request: `Authorization` for the
+  // bearer token, `Idempotency-Key` for the guarded writes, and the two
+  // preconditions the optimistic-concurrency layer expects. A header absent
+  // from this list is stripped by the browser, which surfaces as a request that
+  // mysteriously arrives without its `If-Match` rather than as a CORS error.
+  CORS_ALLOWED_HEADERS: z
+    .string()
+    .default('Content-Type,Authorization,Idempotency-Key,If-Match,If-None-Match,X-Correlation-Id'),
+  // Response headers a browser client may *read*. Without this a cross-origin
+  // `fetch` sees only the CORS-safelisted six, so `ETag` is invisible and the
+  // client cannot send back the `If-Match` the write path requires — the
+  // concurrency layer silently degrades to last-write-wins for exactly the
+  // callers it was built for. `x-correlation-id` is here so a browser can quote
+  // the id of a failed request in a bug report.
+  CORS_EXPOSED_HEADERS: z
+    .string()
+    .default('ETag,Retry-After,Accept-Ranges,Content-Range,RateLimit,RateLimit-Policy,x-correlation-id'),
+  // Whether a browser may send cookies and HTTP auth on a cross-origin request.
+  // Off by default: this API authenticates with a bearer token, which needs no
+  // credentials mode, and turning it on widens what a hostile page can do with
+  // a logged-in user's session. Paired with `CORS_ORIGIN=*` it is refused at
+  // boot — see the invariant below.
+  CORS_ALLOW_CREDENTIALS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  // How long a browser may cache a preflight result. It is a latency knob with
+  // a deployment cost: raise it and a cross-origin client stops paying an extra
+  // round trip per write, but a change to the lists above takes up to this long
+  // to reach browsers that already cached the old answer. Ten minutes is the
+  // usual compromise, and is also near the ceiling Chromium enforces (2h) and
+  // above Firefox's (24h) — a larger number is not an error, it is just ignored.
+  CORS_MAX_AGE_SECONDS: z.coerce.number().int().nonnegative().default(600),
+  // Whether a Content-Security-Policy is sent at all. On by default. The escape
+  // hatch is for a deployment whose edge sets its own policy: two CSP headers
+  // are intersected, not overridden, so the strict one here would combine with
+  // an HTML-serving edge's and break the pages it was protecting.
+  CSP_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Send the policy as `Content-Security-Policy-Report-Only` instead of
+  // enforcing it. For the deployment that has started serving HTML off this
+  // origin and wants to see what the policy would break before it breaks it.
+  // Requires `CSP_REPORT_URI`: report-only with nowhere to report is a header
+  // that does nothing at all, which is the failure mode nobody notices.
+  CSP_REPORT_ONLY: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  // Where violation reports are posted. Empty means the policy carries no
+  // `report-uri`, which is the right default for an API that serves no
+  // documents: with `default-src 'none'` and no HTML there is nothing to
+  // violate it, so a collector would receive nothing but noise from extensions.
+  CSP_REPORT_URI: z.string().default(''),
+  // `Strict-Transport-Security: max-age`, in seconds. `0` omits the header
+  // entirely — the setting for a deployment whose TLS terminator already sends
+  // one, since two HSTS headers on a response is undefined behaviour rather
+  // than a stricter policy. 180 days is helmet's default and is long enough to
+  // matter without being the effectively permanent commitment a preload is.
+  // Sending it in development costs nothing: a browser ignores HSTS delivered
+  // over plain HTTP, which is every local request.
+  HSTS_MAX_AGE_SECONDS: z.coerce.number().int().nonnegative().default(15_552_000),
+  // Whether the policy covers subdomains. On by default, and the part worth
+  // checking before a deploy: it pins *every* subdomain to HTTPS for the
+  // max-age above, including one serving something over plain HTTP that nobody
+  // remembered. Turning it off later does not undo it for a browser that
+  // already cached the policy.
+  HSTS_INCLUDE_SUBDOMAINS: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
+  // Whether to advertise the domain for the browsers' built-in preload list.
+  // Off by default because it is the one setting here that is not reversible on
+  // your own schedule: removal is a request to the list maintainers and then a
+  // wait for browser releases to carry it, measured in months. Submitting it
+  // requires a max-age of at least a year and subdomain coverage, which is
+  // enforced at boot rather than discovered at submission.
+  HSTS_PRELOAD: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   SESSION_SECRET: z.string().min(32).default('default-session-secret-for-pkce-state-only!!'),
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
@@ -578,7 +674,15 @@ const envSchema = z.object({
  * time during the incident that made a handler slow — which is the worst
  * moment to learn that the reclaim floor was set too low.
  */
-const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
+/**
+ * The schema plus the cross-field checks that no single field can express.
+ *
+ * Exported so the invariants can be exercised against candidate environments
+ * without a subprocess: the module-level `safeParse` below runs once, at
+ * import, and ends in `process.exit(1)` — which a test cannot survive to
+ * assert on. A test parses its own object through this instead.
+ */
+export const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
   // An entry's idle clock starts when it is delivered, so a handler allowed to
   // run for `HANDLER_TIMEOUT_MS` leaves its entry idle for that long while
   // nothing is wrong. A reclaim floor at or below it therefore classifies
@@ -739,6 +843,63 @@ const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       message:
         'requires tracing to be on (OTEL_TRACES_EXPORTER other than "none", and OTEL_SDK_DISABLED false), ' +
         'otherwise every exemplar would name a trace that was never exported',
+    });
+  }
+
+  // The pairing the CORS specification forbids and browsers enforce by simply
+  // refusing the response: `Access-Control-Allow-Origin: *` may not accompany
+  // `Access-Control-Allow-Credentials: true`. The reason it is a boot failure
+  // rather than a silent downgrade is what the two settings together *mean* —
+  // an operator who set them believes any page may make authenticated calls,
+  // and either the middleware quietly ignores one of them (so the belief is
+  // false and nothing says so) or it honours both (so every site on the
+  // internet can act as the logged-in user). A refusal is the only reading of
+  // this that does not end in one of those.
+  if (value.CORS_ALLOW_CREDENTIALS && value.CORS_ORIGIN.trim() === '*') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['CORS_ORIGIN'],
+      message:
+        'must name explicit origins when CORS_ALLOW_CREDENTIALS is true: ' +
+        'the wildcard and credentials cannot be combined, and a browser rejects the response outright',
+    });
+  }
+
+  // The preload list's own entry requirements, checked here because the moment
+  // they would otherwise be checked is a submission form months later, against
+  // a header that has been advertising a commitment it did not qualify for the
+  // whole time.
+  if (value.HSTS_PRELOAD && value.HSTS_MAX_AGE_SECONDS < 31_536_000) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['HSTS_MAX_AGE_SECONDS'],
+      message:
+        'must be at least 31536000 (one year) when HSTS_PRELOAD is true, ' +
+        'which is what the browser preload list requires of an entry',
+    });
+  }
+
+  if (value.HSTS_PRELOAD && !value.HSTS_INCLUDE_SUBDOMAINS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['HSTS_INCLUDE_SUBDOMAINS'],
+      message:
+        'must be true when HSTS_PRELOAD is true, ' +
+        'which is what the browser preload list requires of an entry',
+    });
+  }
+
+  // Same shape as the exemplar check above: a setting whose only effect is to
+  // stop enforcing, with no collector to receive what it stopped enforcing.
+  // The operator believes they are watching a policy in trial mode; nothing is
+  // being enforced and nothing is being recorded.
+  if (value.CSP_ENABLED && value.CSP_REPORT_ONLY && value.CSP_REPORT_URI === '') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['CSP_REPORT_URI'],
+      message:
+        'is required when CSP_REPORT_ONLY is true, ' +
+        'otherwise the policy is neither enforced nor reported and the header does nothing',
     });
   }
 
