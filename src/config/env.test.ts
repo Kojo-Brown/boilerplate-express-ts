@@ -1,4 +1,4 @@
-import { env } from '@/config/env';
+import { env, envSchemaWithInvariants } from '@/config/env';
 
 describe('env', () => {
   it('is frozen in every environment, not only in dev', () => {
@@ -93,5 +93,116 @@ describe('env', () => {
     // 0 reads as flapping rather than as leaving, on both the drain answer and
     // the dependency one.
     expect(env.HEALTH_RETRY_AFTER_SECONDS).toBeGreaterThan(0);
+  });
+});
+
+describe('env — CORS and security header defaults', () => {
+  it('ships a named origin rather than a wildcard', () => {
+    // The default a boilerplate is judged by. `*` here would mean every repo
+    // started from this one allows any page on the internet to read its API
+    // until someone notices.
+    expect(env.CORS_ORIGIN).toBe('http://localhost:3000');
+    expect(env.CORS_ALLOW_CREDENTIALS).toBe(false);
+  });
+
+  it('exposes ETag, without which the concurrency layer degrades silently', () => {
+    // A cross-origin `fetch` can read only the safelisted six otherwise, so the
+    // client never sees the ETag, never sends `If-Match`, and every guarded
+    // write quietly becomes last-write-wins for exactly the callers the
+    // optimistic-concurrency module was built for.
+    expect(env.CORS_EXPOSED_HEADERS.split(',')).toContain('ETag');
+  });
+
+  it('accepts the request headers this API actually reads cross-origin', () => {
+    const allowed = env.CORS_ALLOWED_HEADERS.split(',');
+
+    expect(allowed).toContain('Authorization');
+    expect(allowed).toContain('Idempotency-Key');
+    expect(allowed).toContain('If-Match');
+  });
+
+  it('enforces a CSP by default and reports nowhere, having no documents to report on', () => {
+    expect(env.CSP_ENABLED).toBe(true);
+    expect(env.CSP_REPORT_ONLY).toBe(false);
+    expect(env.CSP_REPORT_URI).toBe('');
+  });
+
+  it('sends HSTS by default but never preloads without being asked', () => {
+    // Preload is the one setting here that is not reversible on your own
+    // schedule, so it is the one that has to be opted into.
+    expect(env.HSTS_MAX_AGE_SECONDS).toBe(15_552_000);
+    expect(env.HSTS_INCLUDE_SUBDOMAINS).toBe(true);
+    expect(env.HSTS_PRELOAD).toBe(false);
+  });
+});
+
+describe('env — security invariants', () => {
+  // `process.env` under `jest.setup.ts` is a valid environment, so each case
+  // states only the pair it is about and inherits the rest.
+  const parse = (overrides: Record<string, string>) =>
+    envSchemaWithInvariants.safeParse({ ...process.env, ...overrides });
+
+  const pathsIn = (result: ReturnType<typeof parse>): string[] =>
+    result.success ? [] : result.error.issues.flatMap((issue) => issue.path.map(String));
+
+  it('refuses a wildcard origin paired with credentials', () => {
+    // Either the middleware ignores one of the two settings, so the operator's
+    // belief is false and nothing says so, or it honours both and every site
+    // on the internet can act as the logged-in user. Neither is a default
+    // worth having, so boot fails instead.
+    const result = parse({ CORS_ORIGIN: '*', CORS_ALLOW_CREDENTIALS: 'true' });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('CORS_ORIGIN');
+  });
+
+  it('allows a wildcard origin on its own', () => {
+    expect(parse({ CORS_ORIGIN: '*', CORS_ALLOW_CREDENTIALS: 'false' }).success).toBe(true);
+  });
+
+  it('allows credentials against a named origin', () => {
+    expect(
+      parse({ CORS_ORIGIN: 'https://app.example.test', CORS_ALLOW_CREDENTIALS: 'true' }).success,
+    ).toBe(true);
+  });
+
+  it('refuses a preload that would not qualify for the list it advertises to', () => {
+    const shortMaxAge = parse({ HSTS_PRELOAD: 'true', HSTS_MAX_AGE_SECONDS: '86400' });
+    expect(shortMaxAge.success).toBe(false);
+    expect(pathsIn(shortMaxAge)).toContain('HSTS_MAX_AGE_SECONDS');
+
+    const noSubdomains = parse({
+      HSTS_PRELOAD: 'true',
+      HSTS_MAX_AGE_SECONDS: '31536000',
+      HSTS_INCLUDE_SUBDOMAINS: 'false',
+    });
+    expect(noSubdomains.success).toBe(false);
+    expect(pathsIn(noSubdomains)).toContain('HSTS_INCLUDE_SUBDOMAINS');
+  });
+
+  it('accepts a preload that does qualify', () => {
+    expect(
+      parse({
+        HSTS_PRELOAD: 'true',
+        HSTS_MAX_AGE_SECONDS: '31536000',
+        HSTS_INCLUDE_SUBDOMAINS: 'true',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('refuses report-only with no collector, which enforces nothing and records nothing', () => {
+    const result = parse({ CSP_REPORT_ONLY: 'true', CSP_REPORT_URI: '' });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('CSP_REPORT_URI');
+  });
+
+  it('accepts report-only once a collector is named', () => {
+    expect(
+      parse({
+        CSP_REPORT_ONLY: 'true',
+        CSP_REPORT_URI: 'https://csp.example.test/report',
+      }).success,
+    ).toBe(true);
   });
 });
