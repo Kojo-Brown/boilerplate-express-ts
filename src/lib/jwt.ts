@@ -49,3 +49,27 @@ export function createTokenPair(userId: string, roles: string[]): TokenPair {
     refreshToken: signRefreshToken(base),
   };
 }
+
+/**
+ * When a refresh token stops verifying, in epoch milliseconds.
+ *
+ * The refresh-token store needs this to know how long to remember a token it
+ * has retired, and reading it off the token is the only way the two can never
+ * disagree: a separately configured retention window that came out shorter
+ * than `JWT_REFRESH_EXPIRES_IN` would leave a stretch in which a reused token
+ * still verifies and the record that would have recognised it is gone.
+ *
+ * Every token this module signs is signed with `expiresIn`, so a payload
+ * without `exp` means something else minted it — which is a 500 rather than a
+ * 401 because it says this process is misconfigured, not that the caller sent
+ * something bad.
+ */
+export function refreshTokenExpiresAt(token: string): number {
+  const { exp } = verifyRefreshToken(token);
+
+  if (typeof exp !== 'number') {
+    throw new AppError(500, 'Refresh token has no expiry claim', 'TOKEN_MISSING_EXP');
+  }
+
+  return exp * 1000;
+}

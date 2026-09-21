@@ -1,3 +1,4 @@
+import { mockRefreshToken } from '@/auth/refresh-token.fixture';
 import { createInMemoryTokenStore } from '@/auth/token-store';
 import type { DomainEventPayloads } from '@/events/domain-events';
 import { createEventBus } from '@/events/event-bus';
@@ -8,7 +9,7 @@ describe('registerDomainSubscribers', () => {
   it('attaches audit and session revocation to the same bus', async () => {
     const entries: AuditEntry[] = [];
     const tokens = createInMemoryTokenStore();
-    await tokens.add('mock-refresh-token-a', 'user-1');
+    await tokens.issue(mockRefreshToken({ token: 'mock-refresh-token-a', userId: 'user-1' }));
 
     const bus = createEventBus<DomainEventPayloads>();
     registerDomainSubscribers(bus, {
@@ -19,7 +20,7 @@ describe('registerDomainSubscribers', () => {
     await bus.publish('user.deleted', { userId: 'user-1', actorId: 'admin-9' });
 
     expect(entries.map((entry) => entry.eventName)).toEqual(['user.deleted']);
-    await expect(tokens.has('mock-refresh-token-a')).resolves.toBe(false);
+    await expect(tokens.isActive('mock-refresh-token-a')).resolves.toBe(false);
   });
 
   it('leaves the bus as it found it when unregistered', async () => {
@@ -39,7 +40,7 @@ describe('registerDomainSubscribers', () => {
   it('runs one subscriber even when the other is broken', async () => {
     const onHandlerError = jest.fn();
     const tokens = createInMemoryTokenStore();
-    await tokens.add('mock-refresh-token-a', 'user-1');
+    await tokens.issue(mockRefreshToken({ token: 'mock-refresh-token-a', userId: 'user-1' }));
 
     const bus = createEventBus<DomainEventPayloads>({ onHandlerError });
     registerDomainSubscribers(bus, {
@@ -56,6 +57,6 @@ describe('registerDomainSubscribers', () => {
     await bus.publish('user.deleted', { userId: 'user-1', actorId: null });
 
     expect(onHandlerError).toHaveBeenCalledTimes(1);
-    await expect(tokens.has('mock-refresh-token-a')).resolves.toBe(false);
+    await expect(tokens.isActive('mock-refresh-token-a')).resolves.toBe(false);
   });
 });

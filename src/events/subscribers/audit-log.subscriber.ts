@@ -100,6 +100,17 @@ const AUDIT_DESCRIPTORS: { [K in DomainEventName]: AuditDescriptor<K> } = {
     actorId: payload.userId,
     attributes: { scope: payload.scope },
   }),
+
+  // `actorId` is the user and not `null`, even though the whole point of this
+  // event is that it may not have been them: the family is theirs, the token
+  // was issued to them, and an audit line that disclaimed the actor would be
+  // claiming to know something the detection specifically cannot. Who actually
+  // presented it is what the surrounding request log is for.
+  'auth.refresh.reused': (payload) => ({
+    subject: payload.userId,
+    actorId: payload.userId,
+    attributes: { familyId: payload.familyId, revokedCount: payload.revokedCount },
+  }),
 };
 
 export interface AuditLogSubscriberOptions {

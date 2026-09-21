@@ -247,20 +247,34 @@ call — to satisfy a method that exists for test convenience.
 ```ts
 // src/auth/auth.types.ts
 export interface RefreshTokenStore {
-  add(token: string, userId: string): Promise<void>;
-  has(token: string): Promise<boolean>;
-  remove(token: string): Promise<void>;
-  removeAllForUser(userId: string): Promise<void>;
+  issue(record: NewRefreshToken): Promise<void>;
+  consume(token: string): Promise<RefreshTokenConsumption>;
+  revoke(token: string): Promise<void>;
+  revokeFamily(familyId: string): Promise<number>;
+  revokeAllForUser(userId: string): Promise<void>;
+  isActive(token: string): Promise<boolean>;
 }
 
 export interface InspectableRefreshTokenStore extends RefreshTokenStore {
   size(): number;
+  prune(now?: number): number;
 }
 ```
 
 `authService` is typed against `RefreshTokenStore`. The in-memory implementation
 returns `InspectableRefreshTokenStore`, so existing tests keep `size()` without
 that being a requirement anyone else has to meet.
+
+The split earned its keep when the store grew reuse detection: `prune()` joined
+`size()` on the inspectable side for exactly the reason `size()` was put there
+— it is housekeeping a DB-backed store would do with a scheduled `DELETE`, not
+something a caller should have to drive — while the production interface gained
+only operations the auth service actually performs. The method names on that
+side date from the same change: `add`/`has`/`remove` became
+`issue`/`isActive`/`revoke` once a retired token was *kept* rather than
+deleted, at which point `has()` no longer had one obvious meaning and `remove()`
+described something the store had stopped doing. See
+[refresh-token reuse detection](./refresh-token-reuse.md).
 
 `UserDirectory` was drawn the same way: one method, `findByEmail`. The auth
 service has no business listing, creating or deleting users, so its view of the

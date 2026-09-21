@@ -59,6 +59,33 @@ export type DomainEventPayloads = {
     /** `all` is a logout-everywhere; `single` retires one refresh token. */
     scope: 'single' | 'all';
   };
+
+  /**
+   * A refresh token was presented after it had already been rotated away, and
+   * its whole family was revoked in response.
+   *
+   * A fact and not a command, on the rule above: the auth service has already
+   * performed the revocation by the time this is published — `revokedCount`
+   * reports what it killed. A subscriber that had to *do* the revoking would
+   * make the security response depend on a listener being attached.
+   *
+   * It is a separate name rather than `auth.session.revoked` with a third
+   * scope because the two mean opposite things to whoever reads them: a
+   * revocation is a user doing something ordinary, and this is the one signal
+   * in the auth module that a credential may be in the wrong hands. Folded
+   * together they would share a rate, a dashboard panel and an alert, and the
+   * rare one would live underneath the common one.
+   *
+   * `familyId` is safe to carry here where the tokens are not: it names the
+   * chain without being usable to mint anything, which is what lets an audit
+   * line tie the reuse to the login that started the chain.
+   */
+  'auth.refresh.reused': {
+    userId: string;
+    familyId: string;
+    /** How many tokens in the family were still live enough to revoke. */
+    revokedCount: number;
+  };
 };
 
 export type DomainEventName = keyof DomainEventPayloads & string;
@@ -80,6 +107,7 @@ export const DOMAIN_EVENT_NAMES = [
   'user.deleted',
   'auth.login.succeeded',
   'auth.session.revoked',
+  'auth.refresh.reused',
 ] as const satisfies readonly DomainEventName[];
 
 /**

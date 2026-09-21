@@ -211,6 +211,15 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   is refused while a disallowed *actual request* is served without the headers,
   why `Vary: Origin` belongs on responses that carried no `Origin`, and why
   `CORS_ORIGIN=*` with credentials fails at boot.
+- [Refresh-token reuse detection](./docs/refresh-token-reuse.md) — rotation
+  makes a session a chain, so a token presented after it was rotated away is
+  the one server-side signal that a refresh token has been copied. Why the
+  response has to revoke the whole rotation family rather than the replayed
+  token (which changes nothing) or all of the user's sessions (which has no
+  evidence behind it), why retiring a token means marking it rather than
+  deleting it, why the retention window is the token's own `exp` and not a
+  setting, why `consume()` is one call rather than a check and a write, and why
+  there is deliberately no grace window and no distinct error code.
 
 ## Authentication
 
