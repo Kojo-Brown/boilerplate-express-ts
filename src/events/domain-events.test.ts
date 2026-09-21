@@ -11,6 +11,7 @@ describe('DOMAIN_EVENT_NAMES', () => {
     const listed = [...DOMAIN_EVENT_NAMES].sort();
     const declared: DomainEventName[] = [
       'auth.login.succeeded',
+      'auth.refresh.reused',
       'auth.session.revoked',
       'user.created',
       'user.deleted',

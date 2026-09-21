@@ -688,7 +688,7 @@ describe('domain events reach their subscribers through the app', () => {
       .post('/v1/auth/login')
       .send({ email: 'user@example.com', password: 'password' });
     const refreshToken = (login.body.data as { refreshToken: string }).refreshToken;
-    await expect(tokenStore.has(refreshToken)).resolves.toBe(true);
+    await expect(tokenStore.isActive(refreshToken)).resolves.toBe(true);
 
     mockQuery.mockResolvedValue([SEED_USERS[0]!]);
     mockQueryOne.mockResolvedValue({ __deleted: true, version: null });
@@ -702,7 +702,7 @@ describe('domain events reach their subscribers through the app', () => {
     expect(res.status).toBe(204);
     // Without the subscriber this token stays valid for JWT_REFRESH_EXPIRES_IN
     // after the account is gone.
-    await expect(tokenStore.has(refreshToken)).resolves.toBe(false);
+    await expect(tokenStore.isActive(refreshToken)).resolves.toBe(false);
   });
 
   it('writes an audit line carrying the deleting request’s correlation id', async () => {

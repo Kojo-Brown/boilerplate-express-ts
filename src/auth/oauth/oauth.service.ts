@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { createTokenPair } from '@/lib/jwt';
+import { createTokenPair, refreshTokenExpiresAt } from '@/lib/jwt';
 import { tokenStore } from '@/auth/token-store';
 import type { GoogleUpsertInput, OAuthUser } from '@/auth/oauth/oauth.types';
 import type { TokenPair } from '@/auth/auth.types';
@@ -26,7 +26,15 @@ export const oauthService = {
 
   async issueTokens(user: OAuthUser): Promise<TokenPair> {
     const tokens = createTokenPair(user.id, user.roles);
-    await tokenStore.add(tokens.refreshToken, user.id);
+    // A provider login starts its own rotation family, exactly as a password
+    // login does: the chain has to exist from the first token or the rotations
+    // built on it have nothing to belong to.
+    await tokenStore.issue({
+      token: tokens.refreshToken,
+      userId: user.id,
+      familyId: crypto.randomUUID(),
+      expiresAt: refreshTokenExpiresAt(tokens.refreshToken),
+    });
     return tokens;
   },
 };

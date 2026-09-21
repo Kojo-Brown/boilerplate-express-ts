@@ -37,6 +37,6 @@ export function registerSessionRevocationSubscriber(
   const { tokens = tokenStore } = options;
 
   return bus.on('user.deleted', async function revokeSessionsForDeletedUser(event) {
-    await tokens.removeAllForUser(event.payload.userId);
+    await tokens.revokeAllForUser(event.payload.userId);
   });
 }

@@ -1,4 +1,5 @@
-import { createTokenPair, verifyRefreshToken } from '@/lib/jwt';
+import { randomUUID } from 'crypto';
+import { createTokenPair, refreshTokenExpiresAt, verifyRefreshToken } from '@/lib/jwt';
 import { AppError } from '@/lib/errors';
 import { tokenStore } from '@/auth/token-store';
 import { authStrategyRegistry } from '@/auth/strategies';
@@ -58,7 +59,15 @@ export function createAuthService({ strategies, tokens, events }: AuthServiceDep
     strategy: AuthStrategyName,
   ): Promise<LoginResponse> {
     const pair = createTokenPair(principal.id, principal.roles);
-    await tokens.add(pair.refreshToken, principal.id);
+
+    // A login starts a new family. Every rotation from here carries the same
+    // id, which is what makes the chain revocable as a unit later.
+    await tokens.issue({
+      token: pair.refreshToken,
+      userId: principal.id,
+      familyId: randomUUID(),
+      expiresAt: refreshTokenExpiresAt(pair.refreshToken),
+    });
 
     // After the token is recorded, so a subscriber never observes a login for a
     // session that does not exist yet. The tokens themselves stay out of the
@@ -98,12 +107,31 @@ export function createAuthService({ strategies, tokens, events }: AuthServiceDep
     },
 
     /**
-     * Rotation publishes nothing on purpose. A refresh happens every few
-     * minutes per active session, so an event here would be the highest-volume
-     * thing on the bus while carrying the least: it says a session that already
-     * announced itself is still going. The signal worth having from this path
-     * is a *reused* refresh token, and that is the Phase 10 reuse-detection
-     * item — a different event with a different meaning.
+     * Rotation itself publishes nothing. A refresh happens every few minutes
+     * per active session, so an event on the success path would be the
+     * highest-volume thing on the bus while carrying the least: it says a
+     * session that already announced itself is still going.
+     *
+     * The signal worth having from this path is a token presented *after* it
+     * was rotated away, and that is what `auth.refresh.reused` reports. Such a
+     * token was valid once, so the server is holding two mutually exclusive
+     * facts — this chain was superseded, and someone still has the superseded
+     * link — and it has no way to tell whether the presenter is the client
+     * replaying a spent token or somebody who copied it. Trusting either
+     * reading is a guess, and one of the two guesses hands out a live session
+     * to a thief. So the whole family goes, both parties are logged out, and
+     * the user reauthenticates: the only outcome that is safe under both
+     * readings.
+     *
+     * Note what is *not* here: no grace window in which the immediate
+     * successor is handed back for a second presentation of the same token.
+     * It is a real and common suggestion, because a client that retries a
+     * refresh across a dropped connection trips this legitimately. But the
+     * window is equally open to whoever else holds the token, so it converts
+     * the one signal that a credential has been copied into a configurable
+     * amount of time in which copying it is free — and the same retry is
+     * already survivable, because the client still holds credentials to log in
+     * with. `docs/refresh-token-reuse.md` carries the argument in full.
      */
     async refresh(refreshToken: string): Promise<RefreshResponse> {
       const payload = verifyRefreshToken(refreshToken);
@@ -112,14 +140,46 @@ export function createAuthService({ strategies, tokens, events }: AuthServiceDep
         throw new AppError(401, 'Token type mismatch', 'TOKEN_TYPE_MISMATCH');
       }
 
-      if (!(await tokens.has(refreshToken))) {
+      // One call, not a check followed by a retire: see `RefreshTokenStore`
+      // for why the join is what keeps two concurrent refreshes from both
+      // winning — and therefore from being a way around the detection.
+      const consumption = await tokens.consume(refreshToken);
+
+      if (consumption.outcome === 'reuse') {
+        const revokedCount = await tokens.revokeFamily(consumption.familyId);
+
+        // Published after the revocation, so no subscriber can observe the
+        // alarm for a family that is still usable.
+        await events.publish('auth.refresh.reused', {
+          userId: consumption.userId,
+          familyId: consumption.familyId,
+          revokedCount,
+        });
+
+        // The same 401 an ordinary revoked token gets. A distinct code here
+        // would tell whoever is holding the token that the server noticed,
+        // which is worth nothing to a legitimate client — it must log in again
+        // either way — and tells an attacker precisely when to stop and which
+        // token they hold is the one being watched.
         throw new AppError(401, 'Refresh token revoked', 'TOKEN_REVOKED');
       }
 
-      // Rotate: revoke old, issue fresh pair.
-      await tokens.remove(refreshToken);
+      if (consumption.outcome !== 'rotated') {
+        throw new AppError(401, 'Refresh token revoked', 'TOKEN_REVOKED');
+      }
+
       const pair = createTokenPair(payload.userId, payload.roles);
-      await tokens.add(pair.refreshToken, payload.userId);
+      await tokens.issue({
+        token: pair.refreshToken,
+        userId: payload.userId,
+        // The successor stays in the family it descends from. This is the line
+        // that makes the chain a chain: a fresh id here would leave every
+        // rotation its own family of one, and revoking one of those on reuse
+        // would kill the stolen token while leaving every other token the
+        // session had minted alive.
+        familyId: consumption.familyId,
+        expiresAt: refreshTokenExpiresAt(pair.refreshToken),
+      });
 
       return pair;
     },
@@ -129,7 +189,7 @@ export function createAuthService({ strategies, tokens, events }: AuthServiceDep
       try {
         const payload = verifyRefreshToken(refreshToken);
         if (payload.type === 'refresh') {
-          await tokens.remove(refreshToken);
+          await tokens.revoke(refreshToken);
           // Inside the `if`, so the event means a session was actually retired
           // rather than that someone posted a string to `/logout`.
           await events.publish('auth.session.revoked', {
@@ -143,7 +203,7 @@ export function createAuthService({ strategies, tokens, events }: AuthServiceDep
     },
 
     async logoutAll(userId: string): Promise<void> {
-      await tokens.removeAllForUser(userId);
+      await tokens.revokeAllForUser(userId);
       await events.publish('auth.session.revoked', { userId, scope: 'all' });
     },
   };

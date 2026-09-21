@@ -122,6 +122,72 @@ describe('POST /v1/auth/refresh', () => {
 
     expect(res.status).toBe(422);
   });
+
+  describe('reuse detection', () => {
+    // Through the real app rather than the service: the rotation chain lives
+    // in the process-wide token store that `createApp` wires up, and a unit
+    // test that injects its own store cannot vouch for that wiring.
+
+    it('revokes the live token too when a spent one is replayed', async () => {
+      const { refreshToken: first } = await loginAsUser();
+
+      const second = (
+        await request(app).post('/v1/auth/refresh').send({ refreshToken: first })
+      ).body.data.refreshToken as string;
+      const third = (
+        await request(app).post('/v1/auth/refresh').send({ refreshToken: second })
+      ).body.data.refreshToken as string;
+
+      // Replay the first link in the chain.
+      const replay = await request(app).post('/v1/auth/refresh').send({ refreshToken: first });
+      expect(replay.status).toBe(401);
+      expect(replay.body.error.code).toBe('TOKEN_REVOKED');
+
+      // The session's current token went with it. Without family revocation
+      // this call still returns 200 and whoever replayed keeps the account.
+      const afterwards = await request(app)
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: third });
+      expect(afterwards.status).toBe(401);
+      expect(afterwards.body.error.code).toBe('TOKEN_REVOKED');
+    });
+
+    it('leaves a concurrent session on another device alone', async () => {
+      const laptop = await loginAsUser();
+      const phone = await loginAsUser();
+
+      await request(app).post('/v1/auth/refresh').send({ refreshToken: phone.refreshToken });
+      const replay = await request(app)
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: phone.refreshToken });
+      expect(replay.status).toBe(401);
+
+      const other = await request(app)
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: laptop.refreshToken });
+      expect(other.status).toBe(200);
+    });
+
+    it('says no more about a replayed token than about any other dead one', async () => {
+      const { refreshToken } = await loginAsUser();
+      await request(app).post('/v1/auth/refresh').send({ refreshToken });
+
+      const loggedOut = await loginAsUser();
+      await request(app)
+        .post('/v1/auth/logout')
+        .send({ refreshToken: loggedOut.refreshToken });
+
+      const replayed = await request(app).post('/v1/auth/refresh').send({ refreshToken });
+      const revoked = await request(app)
+        .post('/v1/auth/refresh')
+        .send({ refreshToken: loggedOut.refreshToken });
+
+      // Same status, same code, same message: the response is not where an
+      // attacker learns that the replay was spotted.
+      expect(replayed.status).toBe(revoked.status);
+      expect(replayed.body.error).toEqual(revoked.body.error);
+    });
+  });
 });
 
 describe('POST /v1/auth/logout', () => {
