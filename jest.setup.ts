@@ -3,6 +3,14 @@ process.env['JWT_REFRESH_SECRET'] = 'test-refresh-secret-must-be-at-least-32-cha
 process.env['NODE_ENV'] = 'test';
 process.env['PORT'] = '4000';
 process.env['DATABASE_URL'] = 'postgresql://user:password@localhost:5432/testdb';
+// Two keys, so the suites that exercise rotation have a ring to rotate within
+// and not just a key. Both decode to the obviously-fake ASCII they spell out —
+// `test-field-encryption-key-00000N` — which is the point: a fixture that looks
+// like a real key is a fixture somebody eventually treats as one.
+process.env['FIELD_ENCRYPTION_KEYS'] =
+  'test-1:dGVzdC1maWVsZC1lbmNyeXB0aW9uLWtleS0wMDAwMDE=,' +
+  'test-2:dGVzdC1maWVsZC1lbmNyeXB0aW9uLWtleS0wMDAwMDI=';
+process.env['FIELD_ENCRYPTION_ACTIVE_KEY_ID'] = 'test-1';
 process.env['AWS_REGION'] = 'us-east-1';
 process.env['AWS_ACCESS_KEY_ID'] = 'test-key-id';
 process.env['AWS_SECRET_ACCESS_KEY'] = 'test-secret-key';

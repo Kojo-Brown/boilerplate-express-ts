@@ -124,6 +124,11 @@ jobs:
       JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_EXPIRES_IN: 7d
       CORS_ORIGIN: http://localhost:3000
+      # Names the key generated in the step below. The migrate step boots the
+      # config module, and the config module refuses to start without a usable
+      # key ring — which is the point of it being required, so CI has to hold
+      # one like any other deployment.
+      FIELD_ENCRYPTION_ACTIVE_KEY_ID: ci-1
 
     steps:
       - uses: actions/checkout@v4
@@ -133,6 +138,7 @@ jobs:
           printf 'JWT_ACCESS_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           printf 'JWT_REFRESH_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'FIELD_ENCRYPTION_KEYS=ci-1:%s\n' "$(openssl rand -base64 32)" >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@v4
 

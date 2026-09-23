@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { STORAGE_DRIVERS } from '@/upload/storage/storage.types';
+// The key-ring parser, not the cipher: `@/crypto/keyring` is a leaf that reads
+// no configuration, which is what lets configuration validate key material at
+// boot without the two importing each other.
+import { KeyringError, parseKeyring } from '@/crypto/keyring';
 import { TRACES_EXPORTERS } from '@/observability/tracing.types';
 // The leaf module, not `@/lib/immutable`: the barrel also exports `freezeInDev`,
 // which reads `env` to decide whether it is enabled, and importing it here would
@@ -111,6 +115,22 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // The key-encryption keys that open encrypted columns, as
+  // `id:base64,id:base64` — 32 raw bytes each (`openssl rand -base64 32`).
+  //
+  // Required, with no default, for the same reason `JWT_ACCESS_SECRET` is: the
+  // alternative is a build that starts happily with encryption disabled, and
+  // the way that is discovered is a table of plaintext PII somebody believed
+  // was encrypted. A deployment that stores no encrypted fields still needs a
+  // key here, which costs one `openssl` invocation.
+  //
+  // A *ring*, not a key, because rotation is a two-phase deployment: every
+  // instance must be able to read the new key before any instance starts
+  // writing under it. See `docs/field-encryption.md`.
+  FIELD_ENCRYPTION_KEYS: z.string().min(1),
+  // Which key in the ring above wraps new writes. The second phase of a
+  // rotation is this line changing, and nothing else.
+  FIELD_ENCRYPTION_ACTIVE_KEY_ID: z.string().min(1),
   SESSION_SECRET: z.string().min(32).default('default-session-secret-for-pkce-state-only!!'),
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
@@ -683,6 +703,24 @@ const envSchema = z.object({
  * assert on. A test parses its own object through this instead.
  */
 export const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
+  // The key ring is parsed here, at boot, and the parse is the validation:
+  // malformed entries, a key that is not 32 bytes, duplicate ids, an active id
+  // the ring does not hold. Every one of those is otherwise found by the first
+  // request that touches an encrypted column — the same failure, discovered by
+  // a user instead of by a deployment that has not taken traffic yet.
+  try {
+    parseKeyring(value.FIELD_ENCRYPTION_KEYS, value.FIELD_ENCRYPTION_ACTIVE_KEY_ID);
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['FIELD_ENCRYPTION_KEYS'],
+      // `KeyringError` messages name the offending entry by id and never carry
+      // key bytes, which matters because this message is printed to stdout by
+      // the boot failure below.
+      message: error instanceof KeyringError ? error.message : 'could not be parsed',
+    });
+  }
+
   // An entry's idle clock starts when it is delivered, so a handler allowed to
   // run for `HANDLER_TIMEOUT_MS` leaves its entry idle for that long while
   // nothing is wrong. A reclaim floor at or below it therefore classifies
