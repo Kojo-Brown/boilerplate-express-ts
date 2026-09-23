@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --max-warnings=0",
     "test": "jest",
+    "rotate:field-keys": "tsx src/scripts/rotate-field-keys.ts",
     "migrate": "tsx src/scripts/migrate.ts up",
     "migrate:down": "tsx src/scripts/migrate.ts down 1",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations"

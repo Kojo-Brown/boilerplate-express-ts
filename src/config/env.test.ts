@@ -197,6 +197,56 @@ describe('env — security invariants', () => {
     expect(pathsIn(result)).toContain('CSP_REPORT_URI');
   });
 
+  it('refuses a key ring whose active key it does not hold', () => {
+    // The mistake that breaks the second phase of a key rotation: the active
+    // id is advanced before the key itself has reached every instance. At boot
+    // this is a deployment that does not start. Missed, it is every write to
+    // an encrypted column failing, on the instances that rolled first.
+    const result = parse({ FIELD_ENCRYPTION_ACTIVE_KEY_ID: 'not-in-the-ring' });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('FIELD_ENCRYPTION_KEYS');
+  });
+
+  it('refuses key material that is not 32 bytes, at boot rather than at first write', () => {
+    const result = parse({
+      FIELD_ENCRYPTION_KEYS: `k1:${Buffer.from('too-short').toString('base64')}`,
+      FIELD_ENCRYPTION_ACTIVE_KEY_ID: 'k1',
+    });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('FIELD_ENCRYPTION_KEYS');
+  });
+
+  it('keeps key material out of the message it prints when it refuses', () => {
+    // The boot failure prints these issues to stdout, which is where a log
+    // shipper picks them up. A config error is also exactly when somebody is
+    // pasting keys around.
+    const key = Buffer.alloc(31, 7).toString('base64');
+    const result = parse({
+      FIELD_ENCRYPTION_KEYS: `k1:${key}`,
+      FIELD_ENCRYPTION_ACTIVE_KEY_ID: 'k1',
+    });
+
+    expect(result.success).toBe(false);
+    const messages = result.success ? [] : result.error.issues.map((issue) => issue.message);
+    expect(messages.join(' ')).toContain('k1');
+    expect(messages.join(' ')).not.toContain(key);
+  });
+
+  it('accepts a ring holding a retired key beside the active one', () => {
+    // The state a rotation spends most of its life in, and the reason this is
+    // a ring rather than a key.
+    expect(
+      parse({
+        FIELD_ENCRYPTION_KEYS:
+          'old:dGVzdC1maWVsZC1lbmNyeXB0aW9uLWtleS0wMDAwMDE=,' +
+          'new:dGVzdC1maWVsZC1lbmNyeXB0aW9uLWtleS0wMDAwMDI=',
+        FIELD_ENCRYPTION_ACTIVE_KEY_ID: 'new',
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts report-only once a collector is named', () => {
     expect(
       parse({

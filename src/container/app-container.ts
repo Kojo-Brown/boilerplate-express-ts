@@ -7,6 +7,7 @@ import {
   OUTBOX,
   REQUEST,
   REQUEST_CONTEXT,
+  USER_PII_REPOSITORY,
   USER_REPOSITORY,
 } from '@/container/tokens';
 import { createRequestContext } from '@/container/request-context';
@@ -14,6 +15,7 @@ import { env } from '@/config/env';
 import { domainEventBus } from '@/events';
 import { PostgresIdempotencyStore } from '@/idempotency';
 import { PostgresOutboxStore } from '@/outbox';
+import { UserPiiRepository } from '@/users/user-pii.repository';
 import { UserRepository } from '@/users/users.repository';
 import { createCpuWorkerPool } from '@/workers/cpu-pool';
 
@@ -34,6 +36,13 @@ export function registerAppDependencies(container: Container): Container {
        * nothing would have complained when it started to.
        */
       .registerSingleton(USER_REPOSITORY, () => new UserRepository())
+
+      /**
+       * A singleton, like the repository above, and for one extra reason: the
+       * factory resolves the process-wide field cipher, so the key ring is
+       * parsed once here rather than per request.
+       */
+      .registerSingleton(USER_PII_REPOSITORY, () => new UserPiiRepository())
 
       /**
        * A value, not a singleton factory, because the container did not create

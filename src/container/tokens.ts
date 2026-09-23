@@ -5,6 +5,7 @@ import type { RequestContext } from '@/container/request-context';
 import type { DomainEventBus } from '@/events';
 import type { IdempotencyStore } from '@/idempotency/idempotency.types';
 import type { DomainOutbox } from '@/outbox';
+import type { UserPiiRepository } from '@/users/user-pii.repository';
 import type { UserRepository } from '@/users/users.repository';
 import type { CpuTasks } from '@/workers/cpu.tasks';
 import type { WorkerPool } from '@/workers/worker-pool';
@@ -34,6 +35,15 @@ export const REQUEST_CONTEXT: InjectionToken<RequestContext> =
 
 export const USER_REPOSITORY: InjectionToken<UserRepository> =
   createToken<UserRepository>('UserRepository');
+
+/**
+ * The encrypted side of a user, kept apart from `USER_REPOSITORY` because the
+ * data is: `user_pii` is its own table so that erasure is a `DELETE`, a
+ * reporting role can be granted `users` without it, and a `SELECT *` on the
+ * user row cannot carry personal data into a response by accident.
+ */
+export const USER_PII_REPOSITORY: InjectionToken<UserPiiRepository> =
+  createToken<UserPiiRepository>('UserPiiRepository');
 
 export const EVENT_BUS: InjectionToken<DomainEventBus> =
   createToken<DomainEventBus>('DomainEventBus');

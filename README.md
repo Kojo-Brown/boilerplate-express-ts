@@ -220,6 +220,14 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   deleting it, why the retention window is the token's own `exp` and not a
   setting, why `consume()` is one call rather than a check and a write, and why
   there is deliberately no grace window and no distinct error code.
+- [Field-level encryption at rest](./docs/field-encryption.md) — AES-256-GCM
+  under a data key generated per value, wrapped under a key-encryption key from
+  a ring. Why two keys rather than one (blast radius, GCM's nonce budget, and a
+  key rotation that rewrites 32 bytes per row instead of every value), why every
+  ciphertext is bound to its table, column and row so a value copied into
+  another user's row stops decrypting, why the key ring is a list and what each
+  of the three deployments in a rotation does, and why searching an encrypted
+  column is deliberately impossible here.
 
 ## Authentication
 
