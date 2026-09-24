@@ -228,6 +228,16 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   another user's row stops decrypting, why the key ring is a list and what each
   of the three deployments in a rotation does, and why searching an encrypted
   column is deliberately impossible here.
+- [PII redaction in structured logs](./docs/pii-redaction.md) — every value on
+  its way to a JSON log line, redacted by key name and by checkable shape. Why a
+  key is matched by *word runs* rather than exactly (which misses `userEmail`)
+  or by substring (which eats `passengers`), why `name`, `address`, `id` and
+  `signature` are deliberately not on the deny list, why every shape detector
+  runs a real check — Luhn, mod-97, the JWT's `eyJ` prefix — before it redacts
+  anything, why the walk refuses to descend into class instances, why cycles are
+  detected against ancestors rather than everything seen, why strings are
+  redacted before they are truncated, and why configuration can only ever redact
+  more.
 
 ## Authentication
 

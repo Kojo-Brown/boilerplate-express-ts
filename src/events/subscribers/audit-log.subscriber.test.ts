@@ -1,6 +1,7 @@
 import type { DomainEventBus, DomainEventPayloads } from '@/events/domain-events';
 import { createEventBus } from '@/events/event-bus';
 import type { AuditEntry, AuditSink } from '@/events/subscribers/audit-log.subscriber';
+import { REDACTED, REDACTED_EMAIL } from '@/logging/redaction.types';
 import {
   consoleAuditSink,
   registerAuditLogSubscriber,
@@ -202,6 +203,36 @@ describe('consoleAuditSink', () => {
         type: 'audit',
         eventName: 'user.deleted',
         subject: 'user-1',
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('redacts the personal data an audit line carries before it reaches stdout', () => {
+    // `user.created` records the address the account was opened with. The
+    // subscriber keeps recording it — the entry a SIEM sink receives is
+    // unchanged — and stdout, which is the copy that gets kept for years, does
+    // not. `subject` survives: it is the join key, and it is a pseudonym.
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      consoleAuditSink.record({
+        eventId: 'event-2',
+        eventName: 'user.created',
+        occurredAt: '2024-05-01T12:00:00.000Z',
+        correlationId: 'req-2',
+        actorId: 'admin-9',
+        subject: 'user-1',
+        attributes: { email: 'ada@example.com', note: 'invited by bob@example.com' },
+      });
+
+      const [line] = log.mock.calls[0] as [string];
+      expect(line).not.toContain('ada@example.com');
+      expect(line).not.toContain('bob@example.com');
+      expect(JSON.parse(line)).toMatchObject({
+        subject: 'user-1',
+        correlationId: 'req-2',
+        attributes: { email: REDACTED, note: `invited by ${REDACTED_EMAIL}` },
       });
     } finally {
       log.mockRestore();

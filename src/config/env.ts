@@ -640,6 +640,22 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // Extra property names the log redactor treats as sensitive, comma-separated,
+  // on top of the built-in list in `src/logging/key-policy.ts`.
+  //
+  // It only ever redacts *more*. There is deliberately no setting that redacts
+  // less and none that turns redaction off: a switch like that is one hurried
+  // incident away from being set, and the person who sets it at 3am to see a
+  // request body is not the person who notices a month later that production
+  // has been logging bearer tokens ever since. Widening is the safe direction,
+  // so widening is the only direction configuration can move.
+  //
+  // The usual entries are jurisdictional rather than universal — `ipAddress`
+  // where a regulator treats an address as personal data, or a domain field
+  // like `policyNumber` that is identifying in one industry and meaningless in
+  // every other. Matched by the same word rules as the built-ins, so
+  // `ip_address`, `ipAddress` and `IP-ADDRESS` are one entry.
+  LOG_REDACTION_EXTRA_KEYS: z.string().default(''),
   // How long one readiness dependency check may take before it is recorded as
   // failed. Per check and not for the set, because the checks run concurrently
   // — see `runChecks`, where that choice is what keeps the worst case equal to
