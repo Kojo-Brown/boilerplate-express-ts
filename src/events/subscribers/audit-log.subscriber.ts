@@ -1,3 +1,4 @@
+import { getAppRedactor } from '@/logging/app-redactor';
 import type { DomainEvent, SubscriberView, Unsubscribe } from '@/events/event-bus';
 import type { DomainEventBus, DomainEventName, DomainEventPayloads } from '@/events/domain-events';
 
@@ -28,16 +29,31 @@ export interface AuditSink {
 }
 
 /**
- * Default sink: one JSON object per line on stdout.
+ * Default sink: one redacted JSON object per line on stdout.
  *
  * Deliberately not the request logger's format. Morgan's line describes an HTTP
  * exchange and is sampled and rotated accordingly; this describes a
  * security-relevant fact and is the sort of thing that gets kept for years.
  * They share a `correlationId` so the two can be joined, and nothing else.
+ *
+ * "Kept for years" is also why the redactor is here and not at the call sites.
+ * Retention is what turns a field that was fine to write into a liability: the
+ * `user.created` descriptor above records the address the account was opened
+ * with, which is useful for about a week and is a subject-access request for
+ * the rest of the decade. `attributes.email` therefore reaches stdout as
+ * `[redacted]`, and a deployment that genuinely needs the address against the
+ * audit trail should join on `subject` into the encrypted store
+ * (`src/users/user-pii.repository.ts`), where it is covered by key rotation and
+ * by deletion, rather than copy it into a log file that is covered by neither.
+ *
+ * It wraps the *sink* rather than `registerAuditLogSubscriber` because the sink
+ * is the boundary: a deployment that swaps in a SIEM sink is sending the entry
+ * somewhere with its own controls, and it should decide for itself. What must
+ * not happen is stdout getting the raw entry because nobody remembered.
  */
 export const consoleAuditSink: AuditSink = {
   record(entry: AuditEntry): void {
-    console.log(JSON.stringify({ type: 'audit', ...entry }));
+    console.log(JSON.stringify(getAppRedactor()({ type: 'audit', ...entry })));
   },
 };
 
