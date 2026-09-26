@@ -4,6 +4,14 @@ import { STORAGE_DRIVERS } from '@/upload/storage/storage.types';
 // no configuration, which is what lets configuration validate key material at
 // boot without the two importing each other.
 import { KeyringError, parseKeyring } from '@/crypto/keyring';
+// Same relationship, same reason: the secret-ring parser is a leaf that reads no
+// configuration, so configuration can validate webhook key material at boot
+// without the two importing each other. The module barrel is deliberately not
+// used — it re-exports the router, which reads `env`.
+import {
+  parseWebhookSigningSecrets,
+  WebhookSigningSecretError,
+} from '@/webhooks/signing-secrets';
 import { TRACES_EXPORTERS } from '@/observability/tracing.types';
 // The leaf module, not `@/lib/immutable`: the barrel also exports `freezeInDev`,
 // which reads `env` to decide whether it is enabled, and importing it here would
@@ -131,6 +139,41 @@ const envSchema = z.object({
   // Which key in the ring above wraps new writes. The second phase of a
   // rotation is this line changing, and nothing else.
   FIELD_ENCRYPTION_ACTIVE_KEY_ID: z.string().min(1),
+  // The HMAC secrets webhook signatures are verified under, as
+  // `id:base64,id:base64` — 32 to 64 raw bytes each (`openssl rand -base64 32`).
+  //
+  // Required, with no default, and this is the one field here where a default
+  // would be actively dangerous rather than merely unhelpful: a compiled-in
+  // fallback secret is a secret every deployment of this boilerplate shares, so
+  // anyone holding the source could sign a delivery that any of them accepts.
+  // The alternative failure — a service that will not boot until an operator
+  // generates a secret — costs one `openssl` invocation and is discovered by the
+  // deployment rather than by an incident.
+  //
+  // A *ring*, not a secret, because a shared secret cannot be replaced in one
+  // step: verification has to accept the new value everywhere before signing
+  // starts producing it. See `docs/webhook-signing.md`.
+  WEBHOOK_SIGNING_SECRETS: z.string().min(1),
+  // Which entry in the ring above signs *outbound* deliveries. Verification
+  // consults the whole ring regardless, which is what makes the middle phase of a
+  // rotation a no-op rather than an outage.
+  WEBHOOK_SIGNING_ACTIVE_KEY_ID: z.string().min(1),
+  // How far a signed timestamp may sit from this receiver's clock, either way.
+  //
+  // This is also, exactly, how long a captured delivery stays replayable, which
+  // is why it is capped at an hour: the nonce cache closes that window, and a
+  // tolerance measured in days would ask it to hold days of deliveries to do so.
+  // 300s is the figure the established providers converged on, and it is a
+  // statement about NTP-synchronised clocks rather than about network latency.
+  WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: z.coerce.number().int().positive().max(3600).default(300),
+  // Ceiling on the in-process replay cache, in unexpired nonces.
+  //
+  // Size it from arithmetic, not taste: one record per verified delivery, held for
+  // `WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS`, so the steady state is delivery rate
+  // times tolerance. At the defaults, 100000 records covers a sustained 333
+  // deliveries per second. At the bound the endpoint answers 503 rather than
+  // accepting deliveries it cannot protect — see `WebhookReplayCacheFullError`.
+  WEBHOOK_REPLAY_CACHE_MAX_ENTRIES: z.coerce.number().int().positive().default(100_000),
   SESSION_SECRET: z.string().min(32).default('default-session-secret-for-pkce-state-only!!'),
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
@@ -734,6 +777,28 @@ export const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       // key bytes, which matters because this message is printed to stdout by
       // the boot failure below.
       message: error instanceof KeyringError ? error.message : 'could not be parsed',
+    });
+  }
+
+  // The webhook secret ring, parsed here for the reason the key ring above is:
+  // malformed entries, a secret outside the permitted length, a duplicate id, an
+  // active id the ring does not hold. Every one of those is otherwise found by
+  // the first delivery that arrives — the same failure, discovered by a
+  // counterparty instead of by a deployment that has not taken traffic yet.
+  try {
+    parseWebhookSigningSecrets(
+      value.WEBHOOK_SIGNING_SECRETS,
+      value.WEBHOOK_SIGNING_ACTIVE_KEY_ID,
+    );
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['WEBHOOK_SIGNING_SECRETS'],
+      // `WebhookSigningSecretError` messages name the offending entry by id and
+      // never carry secret bytes, which matters because this message is printed
+      // to stdout by the boot failure below.
+      message:
+        error instanceof WebhookSigningSecretError ? error.message : 'could not be parsed',
     });
   }
 

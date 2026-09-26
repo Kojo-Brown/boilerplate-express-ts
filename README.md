@@ -238,6 +238,16 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   detected against ancestors rather than everything seen, why strings are
   redacted before they are truncated, and why configuration can only ever redact
   more.
+- [Webhook request signing](./docs/webhook-signing.md) — HMAC-SHA256 over the raw
+  bytes, in both directions, at `POST /v1/webhooks/inbound`. What a signature does
+  and does not establish, why the freshness window and the single-use nonce are
+  two halves of one guarantee and why the nonce only has to be remembered for the
+  length of the window, why replay protection is not idempotency and what breaks
+  when the two are conflated, why the body is verified before it is parsed (and
+  why that cannot be arranged from inside a router), why the version, timestamp,
+  method and target are all inside the signed string, why a digest mismatch and an
+  unheld key id answer identically while every other refusal names itself, and why
+  a full replay cache answers 503 rather than accepting what it cannot protect.
 
 ## Authentication
 

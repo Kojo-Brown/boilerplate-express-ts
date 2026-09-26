@@ -129,6 +129,10 @@ jobs:
       # key ring — which is the point of it being required, so CI has to hold
       # one like any other deployment.
       FIELD_ENCRYPTION_ACTIVE_KEY_ID: ci-1
+      # Same story for the webhook signing ring, and the same reason it is set
+      # here rather than left to `jest.setup.ts`: the migrate step below boots the
+      # config module outside Jest, so it needs a ring like any other deployment.
+      WEBHOOK_SIGNING_ACTIVE_KEY_ID: ci-1
 
     steps:
       - uses: actions/checkout@v4
@@ -139,6 +143,7 @@ jobs:
           printf 'JWT_REFRESH_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
           printf 'FIELD_ENCRYPTION_KEYS=ci-1:%s\n' "$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          printf 'WEBHOOK_SIGNING_SECRETS=ci-1:%s\n' "$(openssl rand -base64 32)" >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@v4
 

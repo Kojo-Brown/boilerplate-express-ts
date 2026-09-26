@@ -1,6 +1,7 @@
 import type { JwtPayload } from '@/auth/auth.types';
 import type { OAuthUser } from '@/auth/oauth/oauth.types';
 import type { Scope } from '@/lib/container';
+import type { VerifiedWebhookSignature } from '@/webhooks/verify-signature.middleware';
 
 declare global {
   namespace Express {
@@ -31,6 +32,17 @@ declare global {
       //
       // Absent whenever there is no span: tracing disabled, or an untraced path.
       traceId?: string;
+
+      // The signature `verifyWebhookSignature` checked, published so a handler
+      // can name the counterparty it is acting for and so the raw bytes remain
+      // reachable after `req.body` has been replaced by the parsed payload.
+      //
+      // Optional because most requests are not signed webhooks — and because the
+      // optionality is the guarantee: a handler that finds this present is
+      // downstream of a verification that passed, and one that finds it absent
+      // is not behind the middleware at all. There is no third state in which it
+      // holds something unverified.
+      webhookSignature?: VerifiedWebhookSignature;
     }
   }
 }

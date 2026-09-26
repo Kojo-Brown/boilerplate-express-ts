@@ -57,6 +57,15 @@ services:
       JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      # Required, and required here for the reason it is required in the schema: a
+      # compiled-in fallback would be a secret every deployment of this
+      # boilerplate shares. `:?` so compose refuses to start rather than handing
+      # the container an empty string the config module then rejects one layer
+      # further in.
+      WEBHOOK_SIGNING_SECRETS: ${WEBHOOK_SIGNING_SECRETS:?WEBHOOK_SIGNING_SECRETS is required, as id:base64 pairs - see .env.example}
+      WEBHOOK_SIGNING_ACTIVE_KEY_ID: ${WEBHOOK_SIGNING_ACTIVE_KEY_ID:-k1}
+      WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: ${WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS:-300}
+      WEBHOOK_REPLAY_CACHE_MAX_ENTRIES: ${WEBHOOK_REPLAY_CACHE_MAX_ENTRIES:-100000}
       # Optional — leave empty to disable OAuth / S3 locally
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}

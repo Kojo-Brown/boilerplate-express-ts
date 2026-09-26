@@ -25,6 +25,7 @@ import {
   securityHeaderPolicyFromEnv,
   securityHeaders,
 } from '@/security';
+import { WEBHOOK_MAX_BODY_BYTES, WEBHOOKS_RAW_BODY_PATH } from '@/webhooks';
 
 registerGoogleStrategy();
 
@@ -88,6 +89,33 @@ export function createApp(): express.Application {
   // every one of them would be invisible in the latency histogram. It stays
   // below `securityHeaders` either way, so the 204 it writes carries them.
   app.use(corsMiddleware(corsPolicyFromEnv()));
+
+  // Ahead of `express.json()`, and that position is the entire reason this line
+  // is in `app.ts` rather than inside the webhooks router.
+  //
+  // A webhook signature is over *bytes*. `express.json()` reads the stream to
+  // completion, hands the handler a parsed object and discards what it parsed, so
+  // a verifier running after it has nothing left to hash — and re-serialising
+  // `req.body` is not a substitute, because `JSON.parse` then `JSON.stringify` is
+  // not the identity function: key order, whitespace, duplicate keys and number
+  // formatting all move, and every one of those changes the digest. There is no
+  // way to arrange this from inside a router mounted under `/v1`, because by then
+  // the parse has already happened.
+  //
+  // `express.raw()` sets body-parser's own `_body` marker, which is what makes
+  // this cooperative rather than a conflict: `express.json()` below sees the
+  // marker and skips the request instead of trying to read a consumed stream. So
+  // the webhook subtree gets a `Buffer` and every other route is untouched — no
+  // global raw-body capture, and no per-request copy of every JSON body in the
+  // service retained for a verifier that will never look at it.
+  //
+  // `type: '*/*'` because the signature covers the body whatever the sender
+  // labelled it, and a delivery refused for its `Content-Type` before its
+  // signature is checked is a delivery refused with 404-shaped confusion.
+  app.use(
+    WEBHOOKS_RAW_BODY_PATH,
+    express.raw({ type: '*/*', limit: WEBHOOK_MAX_BODY_BYTES }),
+  );
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));

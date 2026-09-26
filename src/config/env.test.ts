@@ -247,6 +247,60 @@ describe('env — security invariants', () => {
     ).toBe(true);
   });
 
+  it('refuses a webhook secret ring whose active id it does not hold', () => {
+    // Phase two of a signing-secret rotation, advanced before the secret itself
+    // reached every instance. At boot this is a deployment that does not start;
+    // missed, it is every outbound delivery signed under nothing.
+    const result = parse({ WEBHOOK_SIGNING_ACTIVE_KEY_ID: 'not-in-the-ring' });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('WEBHOOK_SIGNING_SECRETS');
+  });
+
+  it('refuses a webhook secret shorter than the digest it produces', () => {
+    const result = parse({
+      WEBHOOK_SIGNING_SECRETS: `k1:${Buffer.from('too-short').toString('base64')}`,
+      WEBHOOK_SIGNING_ACTIVE_KEY_ID: 'k1',
+    });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('WEBHOOK_SIGNING_SECRETS');
+  });
+
+  it('keeps webhook secret material out of the message it prints when it refuses', () => {
+    const secret = Buffer.alloc(16, 9).toString('base64');
+    const result = parse({
+      WEBHOOK_SIGNING_SECRETS: `k1:${secret}`,
+      WEBHOOK_SIGNING_ACTIVE_KEY_ID: 'k1',
+    });
+
+    expect(result.success).toBe(false);
+    const messages = result.success ? [] : result.error.issues.map((issue) => issue.message);
+    expect(messages.join(' ')).toContain('k1');
+    expect(messages.join(' ')).not.toContain(secret);
+  });
+
+  it('caps the webhook freshness window at an hour', () => {
+    // The tolerance is exactly how long a captured delivery stays replayable, and
+    // the nonce cache has to hold a record for every delivery inside it. A window
+    // measured in days asks it to hold days of traffic to close a window nobody
+    // meant to open that wide.
+    expect(parse({ WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: '3600' }).success).toBe(true);
+    expect(parse({ WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: '3601' }).success).toBe(false);
+    expect(parse({ WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS: '0' }).success).toBe(false);
+  });
+
+  it('accepts a webhook ring holding a retired secret beside the active one', () => {
+    expect(
+      parse({
+        WEBHOOK_SIGNING_SECRETS:
+          'old:dGVzdC13ZWJob29rLXNpZ25pbmctc2VjcmV0LTAwMDE=,' +
+          'new:dGVzdC13ZWJob29rLXNpZ25pbmctc2VjcmV0LTAwMDI=',
+        WEBHOOK_SIGNING_ACTIVE_KEY_ID: 'new',
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts report-only once a collector is named', () => {
     expect(
       parse({
