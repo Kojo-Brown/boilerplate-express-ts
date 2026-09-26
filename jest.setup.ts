@@ -23,3 +23,11 @@ process.env['SSE_HEARTBEAT_INTERVAL_MS'] = '150';
 // Small enough that the same suite can drive a cursor off the end of the buffer
 // and see the `reset` a client's re-sync path exists for.
 process.env['SSE_REPLAY_BUFFER_SIZE'] = '8';
+// Two obviously-fake HMAC secrets, spelling out `test-webhook-signing-secret-000N`
+// in ASCII for the reason the field-encryption fixtures above do: a fixture that
+// looks like a real secret is a fixture somebody eventually treats as one. Two of
+// them so the suites that exercise rotation have a ring to rotate within.
+process.env['WEBHOOK_SIGNING_SECRETS'] =
+  'test-hmac-1:dGVzdC13ZWJob29rLXNpZ25pbmctc2VjcmV0LTAwMDE=,' +
+  'test-hmac-2:dGVzdC13ZWJob29rLXNpZ25pbmctc2VjcmV0LTAwMDI=';
+process.env['WEBHOOK_SIGNING_ACTIVE_KEY_ID'] = 'test-hmac-1';
