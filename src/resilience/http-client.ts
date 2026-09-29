@@ -83,7 +83,16 @@ export interface RetryNotice {
 export interface HttpClientOptions {
   /** Names the dependency — one client per dependency, one breaker per client. */
   readonly name: string;
-  /** Resolved against every relative request path. */
+  /**
+   * Resolved against every request path, and the boundary they may not cross.
+   *
+   * Set, it is a confinement and not merely a prefix: a request that resolves
+   * to another origin or climbs out of this one's path is refused with an
+   * `OutboundUrlNotAllowedError` rather than sent — see `resolveWithinBase`.
+   * Left unset, the client will address whatever it is handed, which is the
+   * right shape for a general-purpose fetcher and the wrong one for a client
+   * named after a dependency.
+   */
   readonly baseUrl?: string;
   /**
    * Deadline for one attempt, covering headers *and* body.
@@ -330,6 +339,87 @@ const NEVER_ABORTS: AbortSignal = new AbortController().signal;
  * clock, the jitter and the sleep are injected for the same reason: none of the
  * tests below wait for a real backoff.
  */
+/**
+ * A request that would have left the dependency it was addressed to.
+ *
+ * Its own class rather than a `TypeError`, because a caller may well want to
+ * answer it differently from a transport fault: this one is never worth
+ * retrying and never the dependency's fault.
+ */
+export class OutboundUrlNotAllowedError extends Error {
+  constructor(
+    readonly clientName: string,
+    readonly baseUrl: string,
+    readonly requested: string,
+  ) {
+    super(
+      `HttpClient(${clientName}): "${requested}" resolves outside the client's base URL ` +
+        `(${baseUrl})`,
+    );
+    this.name = 'OutboundUrlNotAllowedError';
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+/**
+ * Resolve a request path against `baseUrl` and refuse anything that escapes it.
+ *
+ * `new URL(input, baseUrl)` on its own — which is what this line used to be —
+ * confines nothing. `URL` resolution is specified to let the reference win:
+ * `fetch('https://elsewhere.test/x')` ignores the base outright, `//other.test/x`
+ * keeps the scheme and replaces the host, and `../../x` climbs out of the path.
+ * A client named `payments` then issues a request to whatever the argument said,
+ * with the payments dependency's timeouts, its circuit breaker and — if the
+ * caller attached them — its credentials.
+ *
+ * None of that is reachable from the outside today: no route in this service
+ * puts a caller-supplied string into an outbound request. The point is that it
+ * is one plausible feature away — a callback URL, an avatar to mirror, an
+ * OIDC discovery document — and at that moment the difference between a
+ * server-side request forgery and a 500 is whether this function exists. A
+ * control that has to be added at the same commit as the feature that needs it
+ * is a control that gets added afterwards.
+ *
+ * Confinement is to the base's *directory*, not merely its origin. Origin alone
+ * would still let a path reach an unrelated API sharing a host — the internal
+ * admin surface on the other side of the same gateway — which is the case an
+ * SSRF is usually trying to arrange. `protocol` and `host` are compared rather
+ * than `origin` because `origin` is the string `"null"` for opaque schemes, and
+ * two opaque origins would compare equal.
+ *
+ * A client that genuinely needs to address two subtrees wants two clients: one
+ * per dependency is already this module's rule, and it is what gives each its
+ * own breaker. A client that needs to address anything at all leaves `baseUrl`
+ * unset, which says so.
+ */
+function resolveWithinBase(name: string, baseUrl: string, input: string | URL): URL {
+  const base = new URL(baseUrl);
+  const requested = String(input);
+
+  let resolved: URL;
+  try {
+    resolved = new URL(requested, base);
+  } catch {
+    throw new OutboundUrlNotAllowedError(name, baseUrl, requested);
+  }
+
+  // Everything up to and including the last slash: the directory the base
+  // names. `https://dep.test/v1/` gives `/v1/`, and so does `https://dep.test/v1`
+  // — which is the same thing `URL` resolution does with a relative reference,
+  // so the check agrees with the resolution rather than second-guessing it.
+  const prefix = base.pathname.slice(0, base.pathname.lastIndexOf('/') + 1);
+
+  if (
+    resolved.protocol !== base.protocol ||
+    resolved.host !== base.host ||
+    !resolved.pathname.startsWith(prefix)
+  ) {
+    throw new OutboundUrlNotAllowedError(name, baseUrl, requested);
+  }
+
+  return resolved;
+}
+
 export function createHttpClient(options: HttpClientOptions): HttpClient {
   const {
     name,
@@ -392,7 +482,7 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       perCallHeadersTimeout ?? inheritDeadline(headersTimeoutMs, deadlineMs);
     const bodyIdleMs = perCallBodyIdleTimeout ?? inheritDeadline(bodyIdleTimeoutMs, deadlineMs);
 
-    const url = baseUrl === undefined ? input : new URL(String(input), baseUrl);
+    const url = baseUrl === undefined ? input : resolveWithinBase(name, baseUrl, input);
     const callerSignal = requestInit.signal ?? undefined;
     const maxAttempts = replayable(requestInit, policy) ? policy.attempts : 1;
 

@@ -11,7 +11,8 @@ import { withRetryableTransaction } from '@/db/retry-transaction';
 import { withTransaction } from '@/db/transaction';
 import type { RetryableTransactionOptions } from '@/db/retry-transaction';
 import { assertAdminRemains, patchRemovesAdminRole } from '@/users/last-admin';
-import type { UserRow } from '@/users/users.repository';
+import type { PublicUser } from '@/users/user-view';
+import { toPublicUser, toPublicUsers } from '@/users/user-view';
 import type { CreateUserBody, UpdateUserBody, UserIdParams } from '@/users/users.schemas';
 
 /** A query that has not answered in two seconds is holding a pooled connection
@@ -112,13 +113,25 @@ export type DeleteUserRequest = WithPrecondition<Authenticated<Request<UserIdPar
  * time; the point is that its lifetime is declared in one file instead of being
  * whatever `new UserRepository()` at module scope happened to mean.
  */
-const listUsers: RouteOperation<UserRow[], ListUsersRequest> = async (req) =>
-  scopeOf(req).resolve(USER_REPOSITORY).findAll({ orderBy: 'created_at', order: 'ASC' });
+/**
+ * Every operation below answers with `PublicUser` and never with the row.
+ *
+ * The projection is applied here, at the boundary the repository hands rows
+ * across, rather than in a response writer: it is the last point that still
+ * knows this value is a user, and it is *inside* the caching decorator, so what
+ * `usersCache` retains is the projection too. A stripper further out would
+ * leave a password digest sitting in a process-wide cache for the TTL, which is
+ * most of the exposure with none of the visibility.
+ */
+const listUsers: RouteOperation<PublicUser[], ListUsersRequest> = async (req) =>
+  toPublicUsers(
+    await scopeOf(req).resolve(USER_REPOSITORY).findAll({ orderBy: 'created_at', order: 'ASC' }),
+  );
 
-const getUser: RouteOperation<UserRow, GetUserRequest> = async (req) => {
+const getUser: RouteOperation<PublicUser, GetUserRequest> = async (req) => {
   const user = await scopeOf(req).resolve(USER_REPOSITORY).findById(req.params.id);
   if (!user) throw new AppError(404, 'User not found', 'NOT_FOUND');
-  return user;
+  return toPublicUser(user);
 };
 
 /**
@@ -130,7 +143,7 @@ const getUser: RouteOperation<UserRow, GetUserRequest> = async (req) => {
  * a correctness consequence of the write, so it belongs on the write's own
  * error path. Events carry the consequences the publisher can afford to lose.
  */
-const createUser: RouteOperation<UserRow, CreateUserRequest> = async (req) => {
+const createUser: RouteOperation<PublicUser, CreateUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
   const users = scope.resolve(USER_REPOSITORY);
@@ -173,7 +186,7 @@ const createUser: RouteOperation<UserRow, CreateUserRequest> = async (req) => {
   // cache wrong *after* the write lands.
   await usersCache.clear();
 
-  return user;
+  return toPublicUser(user);
 };
 
 /**
@@ -182,7 +195,7 @@ const createUser: RouteOperation<UserRow, CreateUserRequest> = async (req) => {
  * decided by the same statement that does the writing and there is no window
  * between the two for a concurrent update to slip through.
  */
-const updateUser: RouteOperation<UserRow, UpdateUserRequest> = async (req) => {
+const updateUser: RouteOperation<PublicUser, UpdateUserRequest> = async (req) => {
   const scope = scopeOf(req);
   const context = scope.resolve(REQUEST_CONTEXT);
 
@@ -234,7 +247,7 @@ const updateUser: RouteOperation<UserRow, UpdateUserRequest> = async (req) => {
     { correlationId: context.correlationId },
   );
 
-  return user;
+  return toPublicUser(user);
 };
 
 const removeUser: RouteOperation<void, DeleteUserRequest> = async (req) => {
@@ -299,10 +312,10 @@ const removeUser: RouteOperation<void, DeleteUserRequest> = async (req) => {
  * safely needs a deduplication key, not a retry loop.
  */
 export interface UsersOperations {
-  list: RouteOperation<UserRow[], ListUsersRequest>;
-  getById: RouteOperation<UserRow, GetUserRequest>;
-  create: RouteOperation<UserRow, CreateUserRequest>;
-  update: RouteOperation<UserRow, UpdateUserRequest>;
+  list: RouteOperation<PublicUser[], ListUsersRequest>;
+  getById: RouteOperation<PublicUser, GetUserRequest>;
+  create: RouteOperation<PublicUser, CreateUserRequest>;
+  update: RouteOperation<PublicUser, UpdateUserRequest>;
   remove: RouteOperation<void, DeleteUserRequest>;
 }
 

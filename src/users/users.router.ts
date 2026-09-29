@@ -10,7 +10,9 @@ import { idempotent } from '@/idempotency';
 import { requireIfMatch, sendWithETag } from '@/concurrency';
 import { compose } from '@/lib/pipeline';
 import { validateBody, validateParams } from '@/middleware/validate.middleware';
-import { authenticate, requireRoles } from '@/middleware/auth.middleware';
+import { authenticate, requireRoles, requireSelfOrRoles } from '@/middleware/auth.middleware';
+import { requireAdminToAssignRoles } from '@/users/users.authorization';
+import { ADMIN_ROLE } from '@/users/users.repository';
 
 const router: Router = Router();
 
@@ -21,7 +23,7 @@ const router: Router = Router();
  * `authenticated` below cannot reach back and add a step to `adminOnly`.
  */
 const authenticated = compose().use(authenticate);
-const adminOnly = authenticated.use(requireRoles('admin'));
+const adminOnly = authenticated.use(requireRoles(ADMIN_ROLE));
 
 /**
  * The comment that used to live here — "auth stays ahead of validation so an
@@ -67,11 +69,19 @@ router.post('/import', adminOnly.use(requireCsvUpload).handle(importUsers));
  * The list route deliberately gets no `ETag`: a collection has no single
  * version, and a tag over the whole page would change every time any member
  * did, which is a validator no client can act on.
+ *
+ * `requireSelfOrRoles` is the route's object-level check and it sits *after*
+ * `validateParams`, which is the one ordering that works: the step compares
+ * `req.params.id` against the token's subject, and until the schema has run
+ * that is Express 5's `string | string[]`. It sits ahead of the operation for
+ * the usual reason — an unauthorised caller should not be able to make this
+ * process issue the lookup that would tell it whether the row exists.
  */
 router.get(
   '/:id',
   authenticated
     .use(validateParams(userIdParamsSchema))
+    .use(requireSelfOrRoles(ADMIN_ROLE))
     .handle(usersOperations.getById, { send: sendWithETag }),
 );
 
@@ -113,13 +123,23 @@ router.post(
  * the delete that user may have been granted a role or re-assigned; an
  * unconditional delete throws that away with no trace. A caller that genuinely
  * means "delete it whatever it says now" writes `If-Match: *` and pays nothing.
+ *
+ * `PUT` carries two authorization steps and they are not redundant.
+ * `requireSelfOrRoles` decides *whose row* may be written, and
+ * `requireAdminToAssignRoles` decides *which of its fields* — without the
+ * second, the first is a privilege escalation, because the body schema accepts
+ * `roles` and every caller now permitted to edit their own record could grant
+ * themselves `admin`. The field check is last because it reads `req.body`, and
+ * `req.body` is not `UpdateUserBody` until `validateBody` has said so.
  */
 router.put(
   '/:id',
   authenticated
     .use(validateParams(userIdParamsSchema))
+    .use(requireSelfOrRoles(ADMIN_ROLE))
     .use(requireIfMatch)
     .use(validateBody(updateUserBodySchema))
+    .use(requireAdminToAssignRoles)
     .handle(usersOperations.update, { send: sendWithETag }),
 );
 

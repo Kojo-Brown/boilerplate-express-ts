@@ -2,6 +2,7 @@ import request from 'supertest';
 import { DatabaseError } from 'pg';
 import { createApp } from '@/app';
 import { tokenStore } from '@/auth/token-store';
+import { signAccessToken } from '@/lib/jwt';
 import { resetRateLimiters } from '@/middleware/rate-limit.middleware';
 import { usersCache } from '@/users/users.controller';
 import type { UserRow } from '@/users/users.repository';
@@ -99,6 +100,18 @@ async function getAdminToken(): Promise<string> {
   return (res.body.data as { accessToken: string }).accessToken;
 }
 
+/**
+ * A token for a principal holding only `user`.
+ *
+ * Every case below that reaches `/v1/users/:id` uses the admin token instead,
+ * and that is the object-level authorization added with the OWASP checklist
+ * rather than a preference: the subject of this token is `2` — the id the
+ * stub directory seeds — and the rows this suite mocks are `user-uuid-*`, so
+ * an ordinary principal is never the subject of any of them and gets the 403
+ * the route now owes it. The cases that make that refusal the assertion, and
+ * the self-read that proves the route is not simply admin-only, live in
+ * `owasp-api-top-10.e2e.test.ts`.
+ */
 async function getUserToken(): Promise<string> {
   const res = await request(app)
     .post('/v1/auth/login')
@@ -153,9 +166,9 @@ describe('GET /v1/users (admin only)', () => {
 });
 
 describe('GET /v1/users/:id', () => {
-  it('returns 200 with user data for authenticated user', async () => {
+  it('returns 200 with user data for a permitted caller', async () => {
     mockQueryOne.mockResolvedValue(SEED_USERS[0]!);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .get('/v1/users/user-uuid-1')
@@ -171,7 +184,7 @@ describe('GET /v1/users/:id', () => {
 
   it('returns 404 when user does not exist', async () => {
     mockQueryOne.mockResolvedValue(null);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .get('/v1/users/nonexistent-id')
@@ -303,7 +316,7 @@ describe('PUT /v1/users/:id', () => {
 
   it('returns 200 with updated user', async () => {
     mockQueryOne.mockResolvedValue(updateHit);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
@@ -324,7 +337,7 @@ describe('PUT /v1/users/:id', () => {
 
   it('returns 404 when user does not exist', async () => {
     mockQueryOne.mockResolvedValue(null);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/nonexistent-id')
@@ -337,7 +350,7 @@ describe('PUT /v1/users/:id', () => {
   });
 
   it('returns 422 when email is invalid', async () => {
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
@@ -363,7 +376,7 @@ describe('optimistic concurrency on PUT /v1/users/:id', () => {
   const conflictRow = { ...SEED_USERS[1]!, __updated: false };
 
   it('returns 428 when the request states no expectation at all', async () => {
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
@@ -378,7 +391,7 @@ describe('optimistic concurrency on PUT /v1/users/:id', () => {
 
   it('returns 412 with the current ETag when the row moved on', async () => {
     mockQueryOne.mockResolvedValue(conflictRow);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
@@ -395,7 +408,7 @@ describe('optimistic concurrency on PUT /v1/users/:id', () => {
 
   it('sends the expected versions to the database as a matchable set', async () => {
     mockQueryOne.mockResolvedValue({ ...SEED_USERS[1]!, __updated: true });
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     await request(app)
       .put('/v1/users/user-uuid-2')
@@ -410,7 +423,7 @@ describe('optimistic concurrency on PUT /v1/users/:id', () => {
 
   it('adds no version predicate for If-Match: *', async () => {
     mockQueryOne.mockResolvedValue({ ...SEED_USERS[1]!, __updated: true });
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
@@ -424,7 +437,7 @@ describe('optimistic concurrency on PUT /v1/users/:id', () => {
   });
 
   it('returns 400, not 412, for a weak entity-tag', async () => {
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
@@ -440,7 +453,7 @@ describe('optimistic concurrency on PUT /v1/users/:id', () => {
   });
 
   it('returns 400 for a header that is not an entity-tag list', async () => {
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-2')
@@ -454,7 +467,7 @@ describe('optimistic concurrency on PUT /v1/users/:id', () => {
 
   it('drops a cached read on conflict so the client’s recovery GET is fresh', async () => {
     mockQueryOne.mockResolvedValueOnce(SEED_USERS[1]!).mockResolvedValue(conflictRow);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const before = await request(app)
       .get('/v1/users/user-uuid-2')
@@ -587,7 +600,7 @@ describe('the last administrator cannot be removed', () => {
 
   it('refuses a PUT that drops the last admin role, with 409 LAST_ADMIN', async () => {
     mockQuery.mockResolvedValue(onlyAlice);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-1')
@@ -604,7 +617,7 @@ describe('the last administrator cannot be removed', () => {
   it('allows the same PUT once a second administrator exists', async () => {
     mockQuery.mockResolvedValue(aliceAndCarol);
     mockQueryOne.mockResolvedValue({ ...SEED_USERS[0]!, roles: ['user'], version: 4, __updated: true });
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-1')
@@ -623,7 +636,7 @@ describe('the last administrator cannot be removed', () => {
    */
   it('takes no lock for a patch that cannot remove the role', async () => {
     mockQueryOne.mockResolvedValue({ ...SEED_USERS[0]!, email: 'a@example.com', __updated: true });
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const res = await request(app)
       .put('/v1/users/user-uuid-1')
@@ -637,7 +650,7 @@ describe('the last administrator cannot be removed', () => {
 
   it('takes no lock for a patch that keeps the admin role', async () => {
     mockQueryOne.mockResolvedValue({ ...SEED_USERS[0]!, __updated: true });
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     await request(app)
       .put('/v1/users/user-uuid-1')
@@ -813,15 +826,22 @@ describe('read caching on the users routes', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('does not serve one principal the list computed for another', async () => {
+  it('does not serve one principal the read computed for another', async () => {
     mockQueryOne.mockResolvedValue(SEED_USERS[0]!);
-    const adminToken = await getAdminToken();
-    const userToken = await getUserToken();
+    // Two *administrators*, rather than the admin and the ordinary user this
+    // case used before object-level authorization existed. The property under
+    // test is that the cache key carries the principal, and demonstrating it
+    // needs two principals the route will both serve — a caller the route
+    // refuses never reaches the cache at all, so it proves nothing about the
+    // key. Minted here rather than logged in for, because the stub directory
+    // seeds exactly one administrator.
+    const first = signAccessToken({ userId: 'admin-a', roles: ['admin'] });
+    const second = signAccessToken({ userId: 'admin-b', roles: ['admin'] });
 
-    await request(app).get('/v1/users/user-uuid-1').set('Authorization', `Bearer ${adminToken}`);
+    await request(app).get('/v1/users/user-uuid-1').set('Authorization', `Bearer ${first}`);
     const other = await request(app)
       .get('/v1/users/user-uuid-1')
-      .set('Authorization', `Bearer ${userToken}`);
+      .set('Authorization', `Bearer ${second}`);
 
     // Same URL, different caller: a key that ignored the principal would hand
     // the second caller an answer that was authorised for the first.
@@ -831,7 +851,7 @@ describe('read caching on the users routes', () => {
 
   it('keeps separate entries per resource id', async () => {
     mockQueryOne.mockResolvedValue(SEED_USERS[0]!);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     await request(app).get('/v1/users/user-uuid-1').set('Authorization', `Bearer ${token}`);
     const second = await request(app)
@@ -879,7 +899,7 @@ describe('read caching on the users routes', () => {
 
   it('does not cache a 404, so the row appears as soon as it exists', async () => {
     mockQueryOne.mockResolvedValueOnce(null).mockResolvedValue(SEED_USERS[0]!);
-    const token = await getUserToken();
+    const token = await getAdminToken();
 
     const missing = await request(app)
       .get('/v1/users/user-uuid-1')

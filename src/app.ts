@@ -11,6 +11,7 @@ import { registerErrorTranslator } from '@/lib/error-translators';
 import { postgresErrorTranslator } from '@/db/db.errors';
 import { multerErrorTranslator } from '@/upload/upload.errors';
 import { csvErrorTranslator } from '@/streams/csv.errors';
+import { bodyParserErrorTranslator } from '@/middleware/body-parser.errors';
 import { domainEventBus } from '@/events';
 import { appMetrics, createMetricsRouter } from '@/metrics';
 import { registerDomainSubscribers } from '@/events/subscribers';
@@ -34,6 +35,10 @@ registerGoogleStrategy();
 registerErrorTranslator(postgresErrorTranslator);
 registerErrorTranslator(multerErrorTranslator);
 registerErrorTranslator(csvErrorTranslator);
+// The body parsers are wired below rather than in a feature module, so their
+// refusals are registered here too. Without it the size limit `express.json()`
+// enforces answers 500 — see `body-parser.errors.ts`.
+registerErrorTranslator(bodyParserErrorTranslator);
 
 // Same idea one layer up: the publishers do not know who is listening, and this
 // is the only file that knows the full subscriber list. Attaching here rather

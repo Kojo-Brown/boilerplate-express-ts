@@ -248,6 +248,20 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   method and target are all inside the signed string, why a digest mismatch and an
   unheld key id answer identically while every other refusal names itself, and why
   a full replay cache answers 503 rather than accepting what it cannot protect.
+- [OWASP API Top 10](./docs/owasp-api-top-10.md) — one row per 2023 risk: the
+  control, the file, and the case in
+  `src/tests/e2e/owasp-api-top-10.e2e.test.ts` that proves it still works. Rows
+  with no control say **none** rather than pointing at something adjacent.
+  Writing it down found three things nobody would have marked red: every user
+  response carried the account's `password_hash`; `GET`/`PUT /v1/users/:id`
+  were authenticated but not object-scoped, so any valid token could read any
+  record and `{"roles":["admin"]}` on your own record was a privilege
+  escalation; and the body-size limit worked while reporting itself as a 500,
+  which let anyone fill the error log from an unauthenticated endpoint. Also
+  why the projection lists the fields to keep rather than the one to delete,
+  why the object-level check has to run before the row is read, and why the
+  outbound client confines requests to its base URL for an SSRF surface that
+  does not exist yet.
 
 ## Authentication
 
