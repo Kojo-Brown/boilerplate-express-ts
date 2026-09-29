@@ -1,5 +1,6 @@
 import { CircuitOpenError } from '@/resilience/circuit-breaker';
 import {
+  OutboundUrlNotAllowedError,
   classifyResponse,
   createHttpClient,
   isRetryableTransportError,
@@ -132,6 +133,14 @@ describe('createHttpClient', () => {
       expect(calls[0]?.url).toBe('https://payments.test/v2/charges');
     });
 
+    it('accepts an absolute path inside the base’s directory', async () => {
+      const { client, calls } = harness([body(200)], { baseUrl: 'https://payments.test/v2/' });
+
+      await client.fetch('/v2/charges/ch_1');
+
+      expect(calls[0]?.url).toBe('https://payments.test/v2/charges/ch_1');
+    });
+
     it('hands the caller a body nothing has touched', async () => {
       const { client } = harness([body(200)]);
 
@@ -139,6 +148,66 @@ describe('createHttpClient', () => {
 
       expect(response.bodyUsed).toBe(false);
       await expect(response.text()).resolves.toBe('the origin said something');
+    });
+  });
+
+  /**
+   * A configured `baseUrl` is a boundary, not a prefix.
+   *
+   * Every case here is one `URL` resolution rule doing exactly what it is
+   * specified to do — let the reference win — and every one of them sends this
+   * dependency's client, its breaker and its deadlines somewhere the deployment
+   * never named. Nothing in this service puts a caller-supplied string into one
+   * of these calls today; the whole value of the check is that it is already
+   * here on the day something does.
+   */
+  describe('confinement to the base URL', () => {
+    it.each([
+      ['an absolute URL on another origin', 'https://169.254.169.254/latest/meta-data/'],
+      ['a protocol-relative reference', '//169.254.169.254/latest/meta-data/'],
+      ['a path that climbs out of the base directory', '../../internal/admin'],
+      ['an absolute path outside the base directory', '/internal/admin'],
+      ['a scheme change on the same host', 'http://payments.test/v2/charges'],
+    ])('refuses %s', async (_label, target) => {
+      const { client, calls } = harness([body(200)], { baseUrl: 'https://payments.test/v2/' });
+
+      await expect(client.fetch(target)).rejects.toBeInstanceOf(OutboundUrlNotAllowedError);
+      // The refusal is before the transport, which is the only part that
+      // matters: a request refused after it was sent is not refused.
+      expect(calls).toHaveLength(0);
+    });
+
+    it('names the client, the base and what was asked for', async () => {
+      const { client } = harness([body(200)], { baseUrl: 'https://payments.test/v2/' });
+
+      await expect(client.fetch('https://evil.test/x')).rejects.toMatchObject({
+        clientName: 'payments',
+        baseUrl: 'https://payments.test/v2/',
+        requested: 'https://evil.test/x',
+      });
+    });
+
+    it('treats a base with no trailing slash the way URL resolution does', async () => {
+      // `new URL('charges', 'https://payments.test/v2')` is
+      // `https://payments.test/charges` — the last segment is a document, not a
+      // directory. The guard has to agree with that or it would refuse the very
+      // request it just resolved.
+      const { client, calls } = harness([body(200)], { baseUrl: 'https://payments.test/v2' });
+
+      await client.fetch('charges');
+
+      expect(calls[0]?.url).toBe('https://payments.test/charges');
+    });
+
+    it('confines nothing when no base URL is configured', async () => {
+      // The documented escape hatch, and the shape the existing cases in this
+      // file use: a client with no base is a general-purpose fetcher and says so
+      // by not naming a dependency's root.
+      const { client, calls } = harness([body(200)]);
+
+      await client.fetch('https://anywhere.test/x');
+
+      expect(calls[0]?.url).toBe('https://anywhere.test/x');
     });
   });
 

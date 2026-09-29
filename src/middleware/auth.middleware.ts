@@ -40,6 +40,69 @@ export function authorizeRoles(principal: JwtPayload | undefined, roles: readonl
   }
 }
 
+/**
+ * Object-level authorization: the principal is the subject, or holds one of
+ * `roles`.
+ *
+ * Kept next to `authorizeRoles` and deliberately not folded into it, because
+ * they answer different questions and OWASP counts them as different risks.
+ * `authorizeRoles` asks whether this *kind* of caller may use this *operation*
+ * at all (API5, function level); this asks whether this *particular* caller may
+ * touch this *particular* object (API1, object level). A route guarded only by
+ * the first is the shape of every BOLA advisory ever written: `GET
+ * /v1/users/:id` behind a valid token, serving any id the caller cares to type.
+ *
+ * The identifier compared is `req.auth.userId` — the subject the token was
+ * minted for — against the id in the path. There is no second lookup and
+ * nothing to spoof: both sides of the comparison come from the server, one from
+ * a signature it verified and one from its own router.
+ */
+export function authorizeSelfOrRoles(
+  principal: JwtPayload | undefined,
+  subjectId: string,
+  roles: readonly string[],
+): void {
+  if (!principal) {
+    throw new AppError(401, 'Authentication required', 'UNAUTHORIZED');
+  }
+
+  if (principal.userId === subjectId) return;
+
+  authorizeRoles(principal, roles);
+}
+
+/**
+ * Pipeline step: rejects a principal that is neither the subject of `:id` nor a
+ * holder of one of `roles`.
+ *
+ * Declared over an authenticated request whose `params` carry an `id`, so the
+ * two steps it depends on — `authenticate` and the `validateParams` that proves
+ * `id` is a string rather than Express 5's `string | string[]` — cannot be left
+ * out or hoisted above it without failing to compile.
+ *
+ * It answers 403 and not 404 for someone else's id. Hiding existence behind a
+ * 404 is the stronger posture in general and is the wrong trade here: the ids
+ * are already handed out in the admin list and in every `user.*` event payload,
+ * so a 404 would conceal nothing from anyone who can enumerate — while costing
+ * a lookup of the row before the refusal, which is the request an unauthorised
+ * caller should not be able to make the database do.
+ */
+export function requireSelfOrRoles(
+  ...roles: string[]
+): <TReq extends Authenticated<Request<{ id: string }>>>(req: TReq) => TReq {
+  if (roles.length === 0) {
+    // Same reasoning as `requireRoles`: an empty list reads at the call site as
+    // "anybody", and means "the subject and nobody else". If that is what a
+    // route wants it should say so with a step that has that name.
+    throw new RangeError('requireSelfOrRoles: at least one role is required');
+  }
+
+  return <TReq extends Authenticated<Request<{ id: string }>>>(req: TReq): TReq => {
+    authorizeSelfOrRoles(req.auth, req.params.id, roles);
+    return req;
+  };
+}
+
 export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
   try {
     req.auth = authenticateRequest(req);

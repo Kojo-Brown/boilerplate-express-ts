@@ -38,6 +38,7 @@ export type {
 } from '@/resilience/http-client';
 export {
   DEFAULT_RETRY_POLICY,
+  OutboundUrlNotAllowedError,
   classifyResponse,
   createHttpClient,
   isRetryableTransportError,
