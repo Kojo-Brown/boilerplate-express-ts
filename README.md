@@ -248,6 +248,19 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   method and target are all inside the signed string, why a digest mismatch and an
   unheld key id answer identically while every other refusal names itself, and why
   a full replay cache answers 503 rather than accepting what it cannot protect.
+- [Mutual TLS](./docs/mtls.md) — `requireClientCertificate`, for the two
+  deployments a client certificate can arrive through: this process terminating
+  TLS with `requestCert`, or an edge terminating it and forwarding what it saw.
+  Why the mode is configured and never sniffed — the "read the socket, fall back
+  to the header" version hands the service to anything that can open a plain
+  socket to it; why the hop a forwarded header arrived on is compared against the
+  transport peer and never against `req.ip`; why the terminator's verdict header
+  is mandatory rather than assumed, because `ssl_verify_client optional` forwards
+  a certificate it could not validate; why two certificates in one header are
+  refused instead of resolved to the leaf; why the refusals are HTTP responses
+  rather than TLS alerts, and what that costs; why a valid chain is not an
+  identity, why a subject carrying two `CN`s is refused, and why a pin belongs on
+  the public key rather than on the certificate.
 - [OWASP API Top 10](./docs/owasp-api-top-10.md) — one row per 2023 risk: the
   control, the file, and the case in
   `src/tests/e2e/owasp-api-top-10.e2e.test.ts` that proves it still works. Rows

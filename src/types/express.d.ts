@@ -1,6 +1,7 @@
 import type { JwtPayload } from '@/auth/auth.types';
 import type { OAuthUser } from '@/auth/oauth/oauth.types';
 import type { Scope } from '@/lib/container';
+import type { ClientCertificateIdentity } from '@/security/client-certificate';
 import type { VerifiedWebhookSignature } from '@/webhooks/verify-signature.middleware';
 
 declare global {
@@ -43,6 +44,15 @@ declare global {
       // is not behind the middleware at all. There is no third state in which it
       // holds something unverified.
       webhookSignature?: VerifiedWebhookSignature;
+
+      // The client certificate `requireClientCertificate` checked, flattened to
+      // the fields a handler or an audit record needs. Optional for the same
+      // reason `webhookSignature` is, and the optionality carries the same
+      // guarantee: a handler that finds this present is downstream of a check
+      // that passed, including the authorisation half, and one that finds it
+      // absent is not behind the middleware at all. There is no state in which
+      // it holds an identity that was merely *presented*.
+      clientCertificate?: ClientCertificateIdentity;
     }
   }
 }
