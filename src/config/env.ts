@@ -12,6 +12,11 @@ import {
   parseWebhookSigningSecrets,
   WebhookSigningSecretError,
 } from '@/webhooks/signing-secrets';
+// A leaf too — it reads no configuration and imports nothing but `node:net` —
+// which is what lets the trusted-peer list be validated at boot without pulling
+// the security barrel in here, since that barrel re-exports middleware that
+// reads `env`.
+import { TrustedPeerList, TrustedPeerSpecError } from '@/security/trusted-peers';
 import { TRACES_EXPORTERS } from '@/observability/tracing.types';
 // The leaf module, not `@/lib/immutable`: the barrel also exports `freezeInDev`,
 // which reads `env` to decide whether it is enabled, and importing it here would
@@ -123,6 +128,75 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  // Where a client certificate is read from, which is a statement about where
+  // TLS terminates and not a preference: `proxy` when an ingress, balancer or
+  // mesh sidecar performed the handshake and forwarded what it saw, `direct`
+  // when this process terminated TLS itself.
+  //
+  // There is no `auto`, and the absence is the security property. Inferring the
+  // mode means falling back to the header when the socket has no certificate,
+  // and that fallback is the whole vulnerability: anything able to open a plain
+  // socket to this process then authenticates as whoever it likes by setting a
+  // header. See `requireClientCertificate`.
+  //
+  // `proxy` is the default because edge termination is the common deployment,
+  // and because the default is useless until `MTLS_TRUSTED_PROXIES` names a hop
+  // — which is the right way round for a credential read out of a header.
+  MTLS_MODE: z.enum(['proxy', 'direct']).default('proxy'),
+  // Proxy mode: the peers whose forwarded certificate headers are believed,
+  // comma-separated, as literal addresses or CIDR blocks.
+  //
+  // Compared against the transport peer, never against `req.ip` — once
+  // `trust proxy` is on, `req.ip` comes from `X-Forwarded-For`, so using it here
+  // would be deciding whether to trust one client-written header on the strength
+  // of another.
+  //
+  // Empty by default and empty is unusable: `clientCertificatePolicyFromEnv`
+  // refuses to build a proxy-mode policy with no hops rather than defaulting to
+  // a local address that happens to be right in development and wrong in
+  // production. Deliberately not validated for emptiness at boot — see that
+  // function for why this one invariant lives at mount time.
+  MTLS_TRUSTED_PROXIES: z.string().default(''),
+  // Proxy mode: the header carrying the client certificate, and the header
+  // carrying the terminator's verdict on it.
+  //
+  // The defaults are nginx's conventional pair. On AWS ALB it is
+  // `x-amzn-mtls-clientcert-leaf`; under Envoy or Istio it is
+  // `x-forwarded-client-cert`, whose format this does not yet read — see
+  // docs/mtls.md. The terminator must set exactly one certificate here and must
+  // overwrite rather than append: a repeated header arrives as one comma-joined
+  // value with the client's own copy first, and is refused for that reason.
+  MTLS_CLIENT_CERT_HEADER: z.string().min(1).default('x-client-cert'),
+  // Required in proxy mode and never defaulted to success. A terminator doing
+  // *optional* client verification forwards the certificate even when it failed
+  // to validate it, recording the failure only here, so a receiver that reads
+  // the certificate and not the verdict accepts anything a client generates.
+  MTLS_CLIENT_VERIFY_HEADER: z.string().min(1).default('x-client-verify'),
+  // The verdict value that means "chain established", compared trimmed and
+  // case-insensitively. nginx sends `SUCCESS`, or `NONE` and `FAILED:<reason>`.
+  //
+  // `*` means "any non-empty value", for the terminators that refuse an
+  // unverified client themselves and so never report a failure — ALB in
+  // `verify` mode drops the connection at the edge and sets its
+  // `X-Amzn-Mtls-Clientcert-*` headers only on a client it validated, so the
+  // evidence is that the header exists. Written out rather than inferred,
+  // because pointed at a header a client can influence it is worth nothing.
+  MTLS_CLIENT_VERIFY_SUCCESS: z.string().min(1).default('SUCCESS'),
+  // Which verified identities are authorised, by subject common name and by
+  // SHA-256 of the SubjectPublicKeyInfo (lowercase hex, 64 characters, colons
+  // ignored). Either list may name an identity; both empty authorises every
+  // certificate the trust anchor validated.
+  //
+  // That last case is correct only where the CA issues to this service's clients
+  // and to nothing else, because otherwise "the chain is valid" is a property
+  // shared with every certificate that CA has ever issued. It is left as a
+  // decision recorded here rather than a default the code picks — the same
+  // treatment `CORS_ORIGIN=*` gets.
+  MTLS_ALLOWED_CLIENT_CNS: z.string().default(''),
+  // Pin the key, not the certificate: a certificate fingerprint changes on every
+  // renewal, including the routine ones where the key never moved, so pinning on
+  // it schedules an outage for reissue day.
+  MTLS_ALLOWED_CLIENT_SPKI_SHA256: z.string().default(''),
   // The key-encryption keys that open encrypted columns, as
   // `id:base64,id:base64` — 32 raw bytes each (`openssl rand -base64 32`).
   //
@@ -800,6 +874,45 @@ export const envSchemaWithInvariants = envSchema.superRefine((value, ctx) => {
       message:
         error instanceof WebhookSigningSecretError ? error.message : 'could not be parsed',
     });
+  }
+
+  // The *shape* of the trusted-peer list, and only its shape. An entry that is
+  // not an address or a CIDR block is a typo in every deployment, whether or not
+  // it mounts client-certificate verification, and the way it is otherwise found
+  // is a hop that never matches: every mTLS request refused, with a message
+  // about an untrusted peer and nothing pointing at the stray character in the
+  // environment. Whether the list is *allowed to be empty* depends on the mode
+  // and on whether anything mounts the middleware at all, so that check lives in
+  // `clientCertificatePolicyFromEnv`.
+  try {
+    TrustedPeerList.parse(value.MTLS_TRUSTED_PROXIES);
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['MTLS_TRUSTED_PROXIES'],
+      message: error instanceof TrustedPeerSpecError ? error.message : 'could not be parsed',
+    });
+  }
+
+  // Same argument, for the pins. A fingerprint with a typo in it matches nothing,
+  // and "matches nothing" is indistinguishable from "this client is not
+  // authorised" at the only moment anybody looks — so it is checked here, where
+  // the message can name the offending entry. Colons are accepted because that
+  // is how every tool that prints a fingerprint prints one.
+  for (const entry of value.MTLS_ALLOWED_CLIENT_SPKI_SHA256.split(',')) {
+    const pin = entry.trim();
+
+    if (pin.length === 0) continue;
+
+    if (!/^[0-9a-f]{64}$/i.test(pin.replace(/:/g, ''))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['MTLS_ALLOWED_CLIENT_SPKI_SHA256'],
+        message:
+          `entry "${pin}" is not a SHA-256 fingerprint: ` +
+          'expected 64 hex characters, optionally colon-separated',
+      });
+    }
   }
 
   // An entry's idle clock starts when it is delivered, so a handler allowed to

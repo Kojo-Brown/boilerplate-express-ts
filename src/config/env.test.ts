@@ -134,6 +134,29 @@ describe('env — CORS and security header defaults', () => {
     expect(env.HSTS_INCLUDE_SUBDOMAINS).toBe(true);
     expect(env.HSTS_PRELOAD).toBe(false);
   });
+
+  it('defaults mTLS to edge termination with no hop trusted and nothing pinned', () => {
+    // The two halves of this are a pair. `proxy` is the common deployment, and
+    // an empty `MTLS_TRUSTED_PROXIES` makes that default *unusable* rather than
+    // permissive: `clientCertificatePolicyFromEnv` refuses to build a policy
+    // from it. A boilerplate that shipped `127.0.0.1` here would hand its first
+    // user a configuration that is right in development and, the first time
+    // anything else can reach the process, a forgeable identity header.
+    expect(env.MTLS_MODE).toBe('proxy');
+    expect(env.MTLS_TRUSTED_PROXIES).toBe('');
+    expect(env.MTLS_ALLOWED_CLIENT_CNS).toBe('');
+    expect(env.MTLS_ALLOWED_CLIENT_SPKI_SHA256).toBe('');
+  });
+
+  it('requires a verdict header rather than defaulting to trusting the certificate', () => {
+    // A terminator doing optional client verification forwards the certificate
+    // even when it could not validate it, recording the failure only in the
+    // verdict. There is no "assume success" default, because that default
+    // accepts any certificate a client generates for itself.
+    expect(env.MTLS_CLIENT_VERIFY_HEADER).toBe('x-client-verify');
+    expect(env.MTLS_CLIENT_VERIFY_SUCCESS).toBe('SUCCESS');
+    expect(env.MTLS_CLIENT_CERT_HEADER).toBe('x-client-cert');
+  });
 });
 
 describe('env — security invariants', () => {
@@ -195,6 +218,50 @@ describe('env — security invariants', () => {
 
     expect(result.success).toBe(false);
     expect(pathsIn(result)).toContain('CSP_REPORT_URI');
+  });
+
+  it('refuses a trusted-peer entry that is not an address or a CIDR block', () => {
+    // Checked at boot even though the list is only *used* by a deployment that
+    // mounts client-certificate verification, because an unreadable entry is a
+    // typo everywhere. The way it is otherwise found is every mTLS request
+    // refused for an untrusted peer, with nothing pointing at the stray
+    // character.
+    const result = parse({ MTLS_TRUSTED_PROXIES: '10.0.0.0/8, terminator.internal' });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('MTLS_TRUSTED_PROXIES');
+  });
+
+  it('refuses a CIDR block whose prefix went missing', () => {
+    // `Number('')` is 0, so this is `10.0.0.0/0` — the entire IPv4 internet —
+    // if the parser is lenient about it.
+    const result = parse({ MTLS_TRUSTED_PROXIES: '10.0.0.0/' });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('MTLS_TRUSTED_PROXIES');
+  });
+
+  it('accepts a trusted-peer list of literals and blocks across both families', () => {
+    expect(
+      parse({ MTLS_TRUSTED_PROXIES: '10.0.0.7, 192.168.0.0/16, 2001:db8::/32' }).success,
+    ).toBe(true);
+  });
+
+  it('refuses a pinned fingerprint that is not a SHA-256', () => {
+    // A pin with a typo matches nothing, and "matches nothing" is
+    // indistinguishable from "this client is not authorised" at the only moment
+    // anybody looks at it.
+    const result = parse({ MTLS_ALLOWED_CLIENT_SPKI_SHA256: 'deadbeef' });
+
+    expect(result.success).toBe(false);
+    expect(pathsIn(result)).toContain('MTLS_ALLOWED_CLIENT_SPKI_SHA256');
+  });
+
+  it('accepts a pin written the way tools print one', () => {
+    const hex = 'a'.repeat(64);
+    const colonised = (hex.match(/.{2}/g) ?? []).join(':').toUpperCase();
+
+    expect(parse({ MTLS_ALLOWED_CLIENT_SPKI_SHA256: `${hex},${colonised}` }).success).toBe(true);
   });
 
   it('refuses a key ring whose active key it does not hold', () => {
