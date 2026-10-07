@@ -1,3 +1,5 @@
+export { isMediaType, selectMediaType } from '@/http/accept';
+
 export type { EntityTag } from '@/http/entity-tag';
 export {
   formatEntityTag,
