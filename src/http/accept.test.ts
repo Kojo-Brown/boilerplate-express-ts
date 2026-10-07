@@ -338,3 +338,50 @@ describe('selectMediaType — media type parameters', () => {
     ).toBe('text/plain;a=2');
   });
 });
+
+/**
+ * Cycle 5 — the asymmetry step 9's refactor made visible. An offer is a
+ * representation this service can produce, which a media range is not: a
+ * wildcard offer names nothing a route could write a body in, and a weight on
+ * an offer is the client's vocabulary in the server's mouth.
+ *
+ * Both are caller bugs rather than request bugs, so they are skipped rather
+ * than thrown — this runs on the response path of a live request, and a throw
+ * there turns a negotiation mistake into a 500 for a client that did nothing
+ * wrong. Skipping degrades to "nothing acceptable", which is a 406 the caller
+ * will see in its own tests.
+ */
+describe('selectMediaType — offers must be concrete', () => {
+  it('cannot serve a wildcard, so it never chooses one', () => {
+    expect(selectMediaType('*/*', ['*/*'])).toBeNull();
+    expect(selectMediaType('text/*', ['text/*'])).toBeNull();
+  });
+
+  it('skips a wildcard offer and keeps the concrete one after it', () => {
+    expect(selectMediaType('*/*', ['*/*', 'application/json'])).toBe('application/json');
+  });
+
+  /** A weight is the client's half of the grammar; an offer carrying one is a bug. */
+  it('refuses an offer that weights itself', () => {
+    expect(selectMediaType('*/*', ['application/json;q=0.5'])).toBeNull();
+    expect(selectMediaType('*/*', ['application/json;q=1'])).toBeNull();
+  });
+
+  it('keeps an offer whose parameter merely happens to be named like a weight', () => {
+    expect(selectMediaType('*/*', ['application/json;quality=high'])).toBe(
+      'application/json;quality=high',
+    );
+  });
+
+  /** A malformed offer has always been skipped; that stays true. */
+  it('skips an offer it cannot parse at all', () => {
+    expect(selectMediaType('*/*', ['not-a-media-type', 'application/json'])).toBe(
+      'application/json',
+    );
+    expect(selectMediaType('*/*', ['text/plain;note=a,b'])).toBeNull();
+  });
+
+  it('answers null when every offer is unusable', () => {
+    expect(selectMediaType('*/*', ['*/*', 'nonsense', 'text/plain;q=0.1'])).toBeNull();
+  });
+});
