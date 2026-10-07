@@ -17,13 +17,17 @@
  * out of the source.
  */
 
-interface MediaRange {
+/**
+ * A media type: the half of the grammar both sides of the negotiation share.
+ *
+ * Either half may be `*` in a client's range and neither may be in a server's
+ * offer, which is not expressible in a type — see `parseOffer`.
+ */
+interface MediaType {
   readonly type: string;
   readonly subtype: string;
-  /** The member's `q`, defaulted to 1. `0` is a refusal, not a low ranking. */
-  readonly quality: number;
   /**
-   * The media type's own parameters, `q` excluded: lowercased names, values as
+   * The type's own parameters, `q` excluded: lowercased names, values as
    * written once any quoting is removed.
    *
    * `q` is deliberately not among them. RFC 9110 §12.4.2 puts the weight
@@ -33,6 +37,12 @@ interface MediaRange {
    * `text/plain`.
    */
   readonly parameters: ReadonlyMap<string, string>;
+}
+
+/** A media type as the client wrote it: with a weight, and wildcards allowed. */
+interface MediaRange extends MediaType {
+  /** The member's `q`, defaulted to 1. `0` is a refusal, not a low ranking. */
+  readonly quality: number;
 }
 
 /**
@@ -54,7 +64,7 @@ function specificity(range: MediaRange): number {
   return 2 + range.parameters.size;
 }
 
-function matches(range: MediaRange, offer: MediaRange): boolean {
+function matches(range: MediaRange, offer: MediaType): boolean {
   if (range.type !== '*') {
     if (range.type !== offer.type) return false;
     if (range.subtype !== '*' && range.subtype !== offer.subtype) return false;
@@ -182,6 +192,12 @@ function parseParameterValue(raw: string): string | null {
 /**
  * One media range: `type/subtype` lowercased, with its parameters and weight.
  * `null` when it is not that shape.
+ *
+ * Also the parser for a server *offer*, which is the asymmetry this signature
+ * hides and `parseOffer` names: an offer is a media type this service can
+ * actually produce, so a wildcard in it means nothing and a weight in it is
+ * the client's vocabulary in the server's mouth. Both are currently parsed and
+ * then ignored.
  */
 function parseMediaRange(member: string): MediaRange | null {
   const segments = splitUnquoted(member, ';');
@@ -276,6 +292,21 @@ function parseAccept(header: string): MediaRange[] | null {
 }
 
 /**
+ * One entry of the caller's `offered` list, as a media type.
+ *
+ * A separate function from `parseMediaRange` with, for now, exactly the same
+ * body — the split is the point. The two strings are read by the same grammar
+ * and judged by different rules: a range is what a client will accept, so a
+ * wildcard and a weight both belong in it, while an offer is a representation
+ * this service can produce, where a wildcard names nothing and a weight is the
+ * client's vocabulary in the server's mouth. Sharing one parser left both
+ * accepted and silently ignored, which is visible here and nowhere else.
+ */
+function parseOffer(offer: string): MediaType | null {
+  return parseMediaRange(offer);
+}
+
+/**
  * The weight that applies to one offer: the `q` of the most specific range
  * matching it, or 0 when nothing matches.
  *
@@ -285,7 +316,7 @@ function parseAccept(header: string): MediaRange[] | null {
  * client just refused; reading the first match would make the answer depend on
  * the order the client happened to list its ranges in.
  */
-function qualityFor(ranges: readonly MediaRange[], offer: MediaRange): number {
+function qualityFor(ranges: readonly MediaRange[], offer: MediaType): number {
   let best: MediaRange | undefined;
 
   for (const range of ranges) {
@@ -332,7 +363,7 @@ export function selectMediaType(
   let chosenQuality = 0;
 
   for (const offer of offered) {
-    const parsed = parseMediaRange(offer);
+    const parsed = parseOffer(offer);
     // An offer this server cannot itself name is not matchable. That is a bug
     // in the caller rather than in the request, so it is skipped rather than
     // thrown on the response path of a live request.
