@@ -56,22 +56,50 @@ interface MediaRange extends MediaType {
 }
 
 /**
- * How specific a range is, so that the one which *speaks for* an offer can be
- * picked out of the several that match it: `text/plain;format=flowed` over
- * `text/plain` over `text/*` over star-slash-star. Only the winner's weight
- * counts, which is what makes a field pairing a broad `q=1` with a narrow `q=0`
- * a refusal rather than a tie.
+ * How broad a range's media type is: 0 for the full wildcard, 1 for `type/*`,
+ * 2 for a concrete `type/subtype`.
  *
- * Parameters rank above the type/subtype halves rather than beside them,
- * because a parameterised range is a subset of the bare range it extends and so
- * is always the narrower statement. Their count is added rather than compared
- * separately, which is safe here: two ranges that match the same offer can
- * differ in parameter count only if one names a superset of the other's.
+ * Only half the ordering. Parameters narrow a range further, and they are
+ * compared separately rather than added in — see `moreSpecific`.
  */
-function specificity(range: MediaRange): number {
+function breadth(range: MediaRange): number {
   if (range.type === '*') return 0;
   if (range.subtype === '*') return 1;
-  return 2 + range.parameters.size;
+  return 2;
+}
+
+/**
+ * Whether `candidate` speaks for an offer in preference to `incumbent`: the
+ * narrower statement of the two, and on a dead tie the lower weight.
+ *
+ * Both halves exist because the answer must not depend on the order the client
+ * listed its ranges in — the field is a set of statements, and §12.5.1 makes
+ * nothing of their order. An earlier version returned one number,
+ * `2 + parameters.size`, and counted parameters only on a concrete range. That
+ * left `text/*;charset=utf-8` and `text/*` equal, so reversing the field flipped
+ * the answer between a 406 and a 200. Comparing the two dimensions in order
+ * instead — media type first, then parameter count — keeps a parameterised
+ * wildcard below every concrete range while still ranking it above the bare
+ * wildcard it extends, which adding them cannot do: `text/*;a=1;b=2` would
+ * outrank `text/plain`.
+ *
+ * The weight tie-break is for the pair specificity genuinely cannot order,
+ * which is a range repeated with two different `q`s. A field saying both "yes"
+ * and "no" about one media type has expressed no preference, and the safe
+ * reading of a contradiction is the refusal: a client sent a representation it
+ * told the server not to send is a worse outcome than a 406 it can retry
+ * without the duplicate.
+ */
+function moreSpecific(candidate: MediaRange, incumbent: MediaRange): boolean {
+  const candidateBreadth = breadth(candidate);
+  const incumbentBreadth = breadth(incumbent);
+  if (candidateBreadth !== incumbentBreadth) return candidateBreadth > incumbentBreadth;
+
+  const candidateParameters = candidate.parameters.size;
+  const incumbentParameters = incumbent.parameters.size;
+  if (candidateParameters !== incumbentParameters) return candidateParameters > incumbentParameters;
+
+  return candidate.quality < incumbent.quality;
 }
 
 function matches(range: MediaRange, offer: MediaType): boolean {
@@ -349,14 +377,15 @@ export function isMediaType(value: string): boolean {
  * §12.5.1's precedence rule, and it is what lets a field say "anything, except
  * HTML". Reading the highest weight among the matches would serve the HTML the
  * client just refused; reading the first match would make the answer depend on
- * the order the client happened to list its ranges in.
+ * the order the client happened to list its ranges in, which `moreSpecific`
+ * orders every pair of matches precisely so that it does not.
  */
 function qualityFor(ranges: readonly MediaRange[], offer: MediaType): number {
   let best: MediaRange | undefined;
 
   for (const range of ranges) {
     if (!matches(range, offer)) continue;
-    if (best === undefined || specificity(range) > specificity(best)) best = range;
+    if (best === undefined || moreSpecific(range, best)) best = range;
   }
 
   return best?.quality ?? 0;
