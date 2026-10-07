@@ -43,6 +43,16 @@ interface MediaType {
 interface MediaRange extends MediaType {
   /** The member's `q`, defaulted to 1. `0` is a refusal, not a low ranking. */
   readonly quality: number;
+  /**
+   * Whether `q` was written out, as against defaulted to 1.
+   *
+   * Irrelevant to a client's range — an explicit `q=1` and an absent one mean
+   * the same thing — and carried only so that `parseOffer` can refuse an offer
+   * that weights itself. A weight is the client's half of the grammar, and
+   * `quality === 1` cannot distinguish the server that wrote `q=1` from the
+   * server that wrote nothing.
+   */
+  readonly weighted: boolean;
 }
 
 /**
@@ -259,7 +269,7 @@ function parseMediaRange(member: string): MediaRange | null {
     parameters.set(name, value);
   }
 
-  return { type, subtype, quality, parameters };
+  return { type, subtype, quality, parameters, weighted: weightSeen };
 }
 
 /**
@@ -292,18 +302,28 @@ function parseAccept(header: string): MediaRange[] | null {
 }
 
 /**
- * One entry of the caller's `offered` list, as a media type.
+ * One entry of the caller's `offered` list, as a media type: the same grammar
+ * as a media range, judged by the stricter rules an offer has to meet.
  *
- * A separate function from `parseMediaRange` with, for now, exactly the same
- * body — the split is the point. The two strings are read by the same grammar
- * and judged by different rules: a range is what a client will accept, so a
- * wildcard and a weight both belong in it, while an offer is a representation
- * this service can produce, where a wildcard names nothing and a weight is the
- * client's vocabulary in the server's mouth. Sharing one parser left both
- * accepted and silently ignored, which is visible here and nowhere else.
+ * A wildcard is refused because no route can write a body in it — answering
+ * star-slash-star to a client that asked for anything is the negotiation
+ * returning the question. A weight is refused because it is the client's half
+ * of the grammar: the caller that writes one has mistaken this list for an
+ * `Accept` field, and honouring it would mean a server outranking a client's
+ * preference with its own.
+ *
+ * `null` rather than a throw, for both, and for a value that is not a media
+ * type at all. This runs on the response path of a live request, so a throw
+ * would turn the caller's mistake into a 500 for a client that did nothing
+ * wrong; skipping the entry degrades to "nothing acceptable", which is the 406
+ * the caller meets in its own tests.
  */
 function parseOffer(offer: string): MediaType | null {
-  return parseMediaRange(offer);
+  const parsed = parseMediaRange(offer);
+  if (parsed === null) return null;
+  if (parsed.type === '*' || parsed.subtype === '*') return null;
+  if (parsed.weighted) return null;
+  return parsed;
 }
 
 /**
