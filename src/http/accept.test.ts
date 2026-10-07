@@ -38,7 +38,7 @@ describe('selectMediaType — exact media types', () => {
 
 /**
  * Cycle 2 — the field is a list of *media ranges*, not a media type, and a
- * range may be `type/*` or `*​/*`. Where two ranges match one offer, the more
+ * range may be `type/*` or the full wildcard. Where two ranges match one offer, the more
  * specific one is the one that speaks for it (RFC 9110 §12.5.1) — which matters
  * only once weights arrive in cycle 3, but the ordering is what decides *which*
  * weight applies, so it is established here.
@@ -75,11 +75,12 @@ describe('selectMediaType — lists and wildcards', () => {
     expect(selectMediaType('*/*', ['text/csv', 'application/json'])).toBe('text/csv');
   });
 
-  /**
-   * `*​/subtype` is not in the grammar. Admitting it would make `*​/json` mean
-   * something this parser invented, so the member is not well-formed and the
-   * whole field is ignored — the policy cycle 3 pins down.
-   */
+  // A wildcard type paired with a real subtype is not in the grammar.
+  // Admitting it would make `*/json` mean something this parser invented, so
+  // the member is not well-formed and the whole field is ignored — the policy
+  // cycle 3 pins down. (Written as a line comment, not a block one: the literal
+  // closes a block comment, and the zero-width space an earlier draft used to
+  // hide that left an invisible character in the source.)
   it('does not invent a subtype-only wildcard', () => {
     expect(selectMediaType('*/json', ['application/json'])).toBe('application/json');
     expect(selectMediaType('*/json', ['text/csv'])).toBe('text/csv');
