@@ -35,3 +35,62 @@ describe('selectMediaType — exact media types', () => {
     expect(selectMediaType('text/plain', ['Text/Plain'])).toBe('Text/Plain');
   });
 });
+
+/**
+ * Cycle 2 — the field is a list of *media ranges*, not a media type, and a
+ * range may be `type/*` or `*​/*`. Where two ranges match one offer, the more
+ * specific one is the one that speaks for it (RFC 9110 §12.5.1) — which matters
+ * only once weights arrive in cycle 3, but the ordering is what decides *which*
+ * weight applies, so it is established here.
+ */
+describe('selectMediaType — lists and wildcards', () => {
+  it('reads the field as a list rather than as one media type', () => {
+    expect(selectMediaType('text/html, application/json', ['application/json'])).toBe(
+      'application/json',
+    );
+  });
+
+  it('tolerates the whitespace a real client sends around members', () => {
+    expect(selectMediaType('  text/html ,\tapplication/json  ', ['application/json'])).toBe(
+      'application/json',
+    );
+  });
+
+  it('matches any subtype under a type wildcard', () => {
+    expect(selectMediaType('image/*', ['image/png'])).toBe('image/png');
+    expect(selectMediaType('image/*', ['application/pdf'])).toBeNull();
+  });
+
+  it('matches anything at all under */*', () => {
+    expect(selectMediaType('*/*', ['application/pdf'])).toBe('application/pdf');
+  });
+
+  /**
+   * The server's order is its preference, so with everything equally acceptable
+   * the first offer wins. A client that wants to express a preference has
+   * weights for it.
+   */
+  it('prefers the server’s own order when the client is indifferent', () => {
+    expect(selectMediaType('*/*', ['application/json', 'text/csv'])).toBe('application/json');
+    expect(selectMediaType('*/*', ['text/csv', 'application/json'])).toBe('text/csv');
+  });
+
+  /**
+   * `*​/subtype` is not in the grammar. Admitting it would make `*​/json` mean
+   * something this parser invented, so the member is not well-formed and the
+   * whole field is ignored — the policy cycle 3 pins down.
+   */
+  it('does not invent a subtype-only wildcard', () => {
+    expect(selectMediaType('*/json', ['application/json'])).toBe('application/json');
+    expect(selectMediaType('*/json', ['text/csv'])).toBe('text/csv');
+  });
+
+  /** An empty field is a field, and it is the one that accepts nothing. */
+  it('accepts nothing for an empty field', () => {
+    expect(selectMediaType('', ['application/json'])).toBeNull();
+  });
+
+  it('chooses nothing when there is nothing to choose from', () => {
+    expect(selectMediaType('*/*', [])).toBeNull();
+  });
+});
