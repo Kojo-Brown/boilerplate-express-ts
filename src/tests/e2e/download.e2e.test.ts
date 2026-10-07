@@ -274,3 +274,116 @@ describe('upload then download', () => {
     expect(res.headers['etag']).toBe(`"${uploaded.body.data.checksum.hex as string}"`);
   });
 });
+
+/**
+ * Content negotiation over the real route, which is the only place the ordering
+ * against `requireAuth`, the 404, and the conditional handling can be checked.
+ */
+describe('GET /v1/uploads/:objectId — Accept', () => {
+  it('serves the stored representation to a client that will take it', async () => {
+    const objectId = await store(Buffer.from('png-bytes'), 'a.png', 'image/png');
+
+    await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('Accept', 'image/png')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200)
+      .expect('Content-Type', 'image/png');
+  });
+
+  it('serves it to a browser’s field, which ends in a weighted catch-all', async () => {
+    const objectId = await store(Buffer.from('png-bytes'), 'a.png', 'image/png');
+
+    await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('Accept', 'text/html,application/xhtml+xml,image/avif,image/webp,*/*;q=0.8')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+  });
+
+  it('answers 406, in the envelope, when it holds nothing the client accepts', async () => {
+    const objectId = await store(Buffer.from('png-bytes'), 'a.png', 'image/png');
+
+    const res = await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('Accept', 'image/jpeg')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(406);
+    expect(res.body.error).toMatchObject({ code: 'NOT_ACCEPTABLE' });
+    // §15.5.7 asks a 406 to describe what *is* available, and the only thing
+    // that can act on it is a human reading the message — so the stored media
+    // type is in it.
+    expect(res.body.error.message).toContain('image/png');
+    expect(res.headers['content-length']).toBeDefined();
+  });
+
+  /**
+   * The 406 body is JSON even though the client's field excluded it, which is
+   * deliberate and is what every origin does: the alternative is an empty 406,
+   * and a status with no body is the one case where a client cannot be told
+   * what went wrong. §15.5.7's "SHOULD generate content" is the licence.
+   */
+  it('describes the refusal in JSON even to a client that did not ask for JSON', async () => {
+    const objectId = await store(Buffer.from('png-bytes'), 'a.png', 'image/png');
+
+    await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('Accept', 'image/jpeg')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(406)
+      .expect('Content-Type', /application\/json/);
+  });
+
+  it('refuses before reading the object, so a 406 transfers nothing', async () => {
+    const objectId = await store(PDF);
+
+    const res = await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('Accept', 'text/html')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(406);
+    expect(Number(res.headers['content-length'])).toBeLessThan(PDF.length);
+  });
+
+  it('still requires a credential — 401 beats 406', async () => {
+    const objectId = await store(Buffer.from('png-bytes'), 'a.png', 'image/png');
+
+    await request(app).get(`/v1/uploads/${objectId}`).set('Accept', 'image/jpeg').expect(401);
+  });
+
+  it('still answers 404 for a key holding nothing — 404 beats 406', async () => {
+    await request(app)
+      .get('/v1/uploads/3f2504e0-4f89-41d3-9a0c-0305e82c3301.png')
+      .set('Accept', 'image/jpeg')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+  });
+
+  it('answers 406 rather than 304 to a client that holds the unacceptable copy', async () => {
+    const objectId = await store(Buffer.from('png-bytes'), 'a.png', 'image/png');
+
+    const first = await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(first.status).toBe(200);
+
+    await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('If-None-Match', first.headers['etag'] as string)
+      .set('Accept', 'image/jpeg')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(406);
+  });
+
+  it('ignores a malformed field rather than refusing the request', async () => {
+    const objectId = await store(Buffer.from('png-bytes'), 'a.png', 'image/png');
+
+    await request(app)
+      .get(`/v1/uploads/${objectId}`)
+      .set('Accept', 'image/png;q=bogus')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+  });
+});
