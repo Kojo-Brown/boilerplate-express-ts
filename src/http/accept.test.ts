@@ -201,3 +201,123 @@ describe('selectMediaType — weights', () => {
     expect(selectMediaType('application/json;q = 0', ['application/json'])).toBeNull();
   });
 });
+
+/**
+ * Cycle 4 — media type parameters. Two things they do, and the naive splitter
+ * gets both wrong.
+ *
+ * They refine specificity: `text/plain;format=flowed` is more specific than
+ * `text/plain`, so a weight on the parameterised range is the one that speaks
+ * for an offer carrying that parameter (RFC 9110 §12.5.1). And a parameter
+ * value may be a quoted string, which may contain a `;` or a `,` — the two
+ * characters the list and parameter splitters key on.
+ */
+describe('selectMediaType — media type parameters', () => {
+  it('matches a parameterised range only against an offer that carries the parameter', () => {
+    expect(selectMediaType('text/plain;format=flowed', ['text/plain;format=flowed'])).toBe(
+      'text/plain;format=flowed',
+    );
+    expect(selectMediaType('text/plain;format=flowed', ['text/plain'])).toBeNull();
+  });
+
+  /** A range with no parameters is the broader one, and still matches. */
+  it('matches a bare range against a parameterised offer', () => {
+    expect(selectMediaType('text/plain', ['text/plain;charset=utf-8'])).toBe(
+      'text/plain;charset=utf-8',
+    );
+  });
+
+  /**
+   * The precedence that only works if a parameter counts toward specificity:
+   * "any plain text, but not the flowed kind".
+   */
+  it('lets a parameterised refusal override a bare acceptance', () => {
+    expect(
+      selectMediaType('text/plain, text/plain;format=flowed;q=0', [
+        'text/plain;format=flowed',
+        'text/plain',
+      ]),
+    ).toBe('text/plain');
+  });
+
+  it('reads the scraper’s version parameter as the preference it is', () => {
+    const field = 'text/plain;version=0.0.4;q=0.3, text/plain;version=1.0.0;q=0.9';
+    expect(
+      selectMediaType(field, ['text/plain;version=0.0.4', 'text/plain;version=1.0.0']),
+    ).toBe('text/plain;version=1.0.0');
+  });
+
+  /** Parameter names fold case; values do not (RFC 9110 §8.3.1). */
+  it('folds the case of a parameter’s name but not of its value', () => {
+    expect(selectMediaType('text/plain;Format=flowed', ['text/plain;format=flowed'])).toBe(
+      'text/plain;format=flowed',
+    );
+    expect(selectMediaType('text/plain;format=FLOWED', ['text/plain;format=flowed'])).toBeNull();
+  });
+
+  /**
+   * A quoted value is equivalent to its unquoted form when the contents are a
+   * token, so the two spellings must match each other.
+   */
+  it('reads a quoted parameter value as the token it quotes', () => {
+    expect(selectMediaType('text/plain;format="flowed"', ['text/plain;format=flowed'])).toBe(
+      'text/plain;format=flowed',
+    );
+  });
+
+  /**
+   * The case `header.split(',')` cannot survive: a comma inside a quoted value
+   * is data, not a list separator. Split on it and this one field becomes two
+   * malformed members — which, under the all-or-nothing policy, silently
+   * discards a field the client wrote correctly.
+   */
+  it('does not split a list on a comma inside a quoted value', () => {
+    expect(selectMediaType('text/plain;note="a,b"', ['text/plain;note=a,b'])).toBeNull();
+    expect(selectMediaType('text/plain;note="a,b"', ['text/plain;note="a,b"'])).toBe(
+      'text/plain;note="a,b"',
+    );
+  });
+
+  /** And the same for `;`, which `member.split(';')` keys on. */
+  it('does not split parameters on a semicolon inside a quoted value', () => {
+    expect(selectMediaType('text/plain;note="a;b";q=0', ['text/plain;note="a;b"'])).toBeNull();
+    expect(selectMediaType('text/plain;note="a;b"', ['text/plain;note="a;b"'])).toBe(
+      'text/plain;note="a;b"',
+    );
+  });
+
+  /** A backslash escape inside a quoted string is part of the grammar too. */
+  it('reads a quoted-pair inside a quoted value', () => {
+    expect(selectMediaType('text/plain;note="a\\"b"', ['text/plain;note="a\\"b"'])).toBe(
+      'text/plain;note="a\\"b"',
+    );
+  });
+
+  /** An unterminated quoted string is malformed, so the field is ignored. */
+  it('ignores a field whose quoted value never closes', () => {
+    expect(selectMediaType('text/plain;note="unclosed', ['text/csv', 'text/plain'])).toBe(
+      'text/csv',
+    );
+  });
+
+  /**
+   * A repeated parameter has no defined meaning — the first and the last reading
+   * disagree about what was asked for, and the sender picks which — so the
+   * member is malformed rather than resolved.
+   */
+  it('refuses a member that names one parameter twice', () => {
+    expect(selectMediaType('text/plain;format=flowed;format=fixed', ['text/csv', 'text/plain'])).toBe(
+      'text/csv',
+    );
+  });
+
+  /** Two members may specify the same media type with different parameters. */
+  it('keeps parameterised members distinct from one another', () => {
+    expect(
+      selectMediaType('text/plain;a=1;q=0.2, text/plain;a=2;q=0.8', [
+        'text/plain;a=1',
+        'text/plain;a=2',
+      ]),
+    ).toBe('text/plain;a=2');
+  });
+});
