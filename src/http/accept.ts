@@ -12,6 +12,8 @@
 interface MediaRange {
   readonly type: string;
   readonly subtype: string;
+  /** The member's `q`, defaulted to 1. `0` is a refusal, not a low ranking. */
+  readonly quality: number;
 }
 
 /**
@@ -32,13 +34,34 @@ function matches(range: MediaRange, type: string, subtype: string): boolean {
   return range.subtype === '*' || range.subtype === subtype;
 }
 
-/** `type/subtype`, lowercased, or `null` when it is not that shape. */
+/**
+ * `qvalue` from RFC 9110 §12.4.2: `0`–`1`, at most three decimals, no sign and
+ * no exponent. Returns `null` for anything else, which makes the member
+ * malformed.
+ *
+ * Strict because the lenient version silently invents a preference. `Number()`
+ * reads `1.5` as 1.5, `-0.5` as a negative, `1e-3` as 0.001 and the empty
+ * string as 0 — and that last one turns a client's typo into a refusal of the
+ * very thing it asked for, which is the worst available answer.
+ */
+function parseQuality(value: string): number | null {
+  if (!/^(?:0(?:\.\d{1,3})?|1(?:\.0{1,3})?)$/.test(value)) return null;
+  return Number(value);
+}
+
+/**
+ * One media range with its parameters: `type/subtype`, lowercased, plus `q`.
+ * `null` when it is not that shape.
+ */
 function parseMediaRange(member: string): MediaRange | null {
-  const slash = member.indexOf('/');
+  const [mediaType, ...parameters] = member.split(';');
+  if (mediaType === undefined) return null;
+
+  const slash = mediaType.indexOf('/');
   if (slash === -1) return null;
 
-  const type = member.slice(0, slash).trim().toLowerCase();
-  const subtype = member.slice(slash + 1).trim().toLowerCase();
+  const type = mediaType.slice(0, slash).trim().toLowerCase();
+  const subtype = mediaType.slice(slash + 1).trim().toLowerCase();
   if (type === '' || subtype === '') return null;
   if (subtype.includes('/')) return null;
 
@@ -47,7 +70,29 @@ function parseMediaRange(member: string): MediaRange | null {
   // which no other server would agree with.
   if (type === '*' && subtype !== '*') return null;
 
-  return { type, subtype };
+  let quality = 1;
+
+  for (const parameter of parameters) {
+    const equals = parameter.indexOf('=');
+    if (equals === -1) return null;
+
+    const name = parameter.slice(0, equals).trim().toLowerCase();
+    const value = parameter.slice(equals + 1).trim();
+    if (name === '') return null;
+
+    // Only `q` is read. The rest of the parameters are the media type's own and
+    // belong to cycle 4, where they start deciding specificity; until then they
+    // have to be *accepted* rather than ignored, because a field carrying
+    // `version=0.0.4` is well-formed and refusing it would ignore the whole
+    // field and answer with the server's first preference instead.
+    if (name !== 'q') continue;
+
+    const parsed = parseQuality(value);
+    if (parsed === null) return null;
+    quality = parsed;
+  }
+
+  return { type, subtype, quality };
 }
 
 /**
@@ -109,6 +154,9 @@ export function selectMediaType(
     return offered[0] ?? null;
   }
 
+  let chosen: string | null = null;
+  let chosenQuality = 0;
+
   for (const offer of offered) {
     const parsed = parseMediaRange(offer);
     // An offer this server cannot itself name is not matchable. It is a bug in
@@ -116,12 +164,36 @@ export function selectMediaType(
     // throwing on the response path of a live request.
     if (parsed === null) continue;
 
-    const best = ranges
-      .filter((range) => matches(range, parsed.type, parsed.subtype))
-      .sort((a, b) => specificity(b) - specificity(a))[0];
-
-    if (best !== undefined) return offer;
+    const quality = qualityFor(ranges, parsed);
+    // `>` and not `>=`: the server's own order is its preference, so the first
+    // offer at a given weight keeps it. A zero weight is a refusal, and
+    // `chosenQuality` starting at 0 is what excludes it.
+    if (quality > chosenQuality) {
+      chosen = offer;
+      chosenQuality = quality;
+    }
   }
 
-  return null;
+  return chosen;
+}
+
+/**
+ * The weight that applies to one offer: the `q` of the most specific range
+ * matching it, or 0 when nothing matches.
+ *
+ * The *most specific* and deliberately not the highest — that is the whole of
+ * §12.5.1's precedence rule, and it is what lets a field say "anything, except
+ * HTML". Reading the highest weight among the matches would serve the HTML the
+ * client just refused; reading the first match would make the answer depend on
+ * the order the client happened to list its ranges in.
+ */
+function qualityFor(ranges: readonly MediaRange[], offer: MediaRange): number {
+  let best: MediaRange | undefined;
+
+  for (const range of ranges) {
+    if (!matches(range, offer.type, offer.subtype)) continue;
+    if (best === undefined || specificity(range) > specificity(best)) best = range;
+  }
+
+  return best?.quality ?? 0;
 }
