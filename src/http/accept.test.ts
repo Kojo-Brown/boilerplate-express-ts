@@ -159,14 +159,31 @@ describe('selectMediaType — weights', () => {
     expect(selectMediaType(chrome, ['application/json', 'text/html'])).toBe('text/html');
   });
 
-  /** A scraper's field, where the narrow preference is the whole point. */
+  /**
+   * A scraper's field, where the narrow preference is the whole point.
+   *
+   * Written in cycle 3 asserting `application/openmetrics-text` for the bare
+   * offers below, and wrong: cycle 4 gave parameters their meaning, and a range
+   * naming `version=1.0.0` does not match an offer that carries no version at
+   * all. So the offers have to name the versions this server actually produces
+   * — the corrected case — and with bare offers both fall through to the
+   * catch-all at `q=0.1`, tie, and the server's order decides. The original
+   * expectation is kept as the second assertion rather than deleted, because
+   * the reason it changed is the feature.
+   */
   it('reads a Prometheus scraper’s field', () => {
     const prometheus =
       'application/openmetrics-text;version=1.0.0;q=0.75,' +
       'text/plain;version=0.0.4;q=0.5,*/*;q=0.1';
     expect(
-      selectMediaType(prometheus, ['text/plain', 'application/openmetrics-text']),
-    ).toBe('application/openmetrics-text');
+      selectMediaType(prometheus, [
+        'text/plain;version=0.0.4',
+        'application/openmetrics-text;version=1.0.0',
+      ]),
+    ).toBe('application/openmetrics-text;version=1.0.0');
+    expect(selectMediaType(prometheus, ['text/plain', 'application/openmetrics-text'])).toBe(
+      'text/plain',
+    );
   });
 
   /**
