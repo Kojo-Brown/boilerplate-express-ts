@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import { isMediaType, selectMediaType } from '@/http/accept';
 import { sendByteRange } from '@/http/byte-range';
 import type { ByteSource } from '@/http/byte-range';
 import { AppError } from '@/lib/errors';
@@ -51,6 +52,44 @@ export const downloadController = {
       const stat = await provider.stat(key);
       if (stat === undefined) {
         next(new AppError(404, 'No object stored under that key', 'OBJECT_NOT_FOUND'));
+        return;
+      }
+
+      // Proactive negotiation (RFC 9110 §12.5.1), after the 404 and before the
+      // read. After, because the stored media type is the only representation
+      // on offer, so there is nothing to negotiate about a key holding nothing
+      // — and a 406 there would answer differently for a key that exists than
+      // for one that does not, to a caller whose `Accept` matches neither.
+      // Before, because a 406 transfers no bytes and so must not cost a request
+      // to the object store.
+      //
+      // One offer, and never a list: this service stores what it was given and
+      // cannot transcode, so the choice is take-it-or-nothing. That is also why
+      // a 406 here is honest rather than lazy — on a route that renders its own
+      // body, a 406 is a decision not to build a representation.
+      //
+      // `isMediaType` guards the call because the stored type is *data*: it was
+      // decided at upload time, and a label this parser cannot read is a
+      // labelling problem rather than a negotiation one. Without the guard an
+      // object stored under a malformed `Content-Type` would be offered as
+      // nothing, refused as a 406, and unreachable for good — the response
+      // would still have carried that exact label if the client had sent no
+      // `Accept` at all.
+      if (
+        isMediaType(stat.contentType) &&
+        selectMediaType(req.headers['accept'], [stat.contentType]) === null
+      ) {
+        next(
+          new AppError(
+            406,
+            // §15.5.7 asks a 406 to say what is available. The only consumer
+            // that can act on it is a person reading the message, so the stored
+            // type goes in the message rather than into a machine-readable list
+            // this API has no format for.
+            `The stored object is ${stat.contentType}, which this request does not accept`,
+            'NOT_ACCEPTABLE',
+          ),
+        );
         return;
       }
 

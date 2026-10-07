@@ -327,6 +327,21 @@ function parseOffer(offer: string): MediaType | null {
 }
 
 /**
+ * Whether `value` is a media type this module can negotiate *with*: a concrete
+ * `type/subtype` with well-formed parameters and no weight.
+ *
+ * For a caller whose offer is data rather than a literal — a stored object's
+ * `Content-Type`, say, which was decided at upload time by something else.
+ * `selectMediaType` cannot answer this, because it conflates the two reasons it
+ * returns `null`: "the client refuses everything offered" and "what you offered
+ * is not a media type". The first is a 406 and the second is the caller's own
+ * data problem, and they must not share an answer.
+ */
+export function isMediaType(value: string): boolean {
+  return parseOffer(value) !== null;
+}
+
+/**
  * The weight that applies to one offer: the `q` of the most specific range
  * matching it, or 0 when nothing matches.
  *
