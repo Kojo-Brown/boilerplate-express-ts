@@ -385,3 +385,68 @@ describe('selectMediaType — offers must be concrete', () => {
     expect(selectMediaType('*/*', ['*/*', 'nonsense', 'text/plain;q=0.1'])).toBeNull();
   });
 });
+
+/**
+ * Cycle 7 — the property the module claimed and did not have.
+ *
+ * `qualityFor` says in its own comment that reading the first match "would make
+ * the answer depend on the order the client happened to list its ranges in".
+ * Picking the most specific match is what avoids that, and it only avoids it
+ * while specificity actually orders every pair of matches. Two cases where it
+ * did not, both found by probing the finished parser rather than by a cycle:
+ *
+ * A parameter was counted only on a fully concrete range, so
+ * `text/*;charset=utf-8` and `text/*` tied, and whichever the client wrote first
+ * decided. And two *identical* ranges with different weights tie by
+ * construction, which no amount of specificity can break.
+ *
+ * Reversing a client's list must never change the answer: the field is a set of
+ * statements, and nothing in §12.5.1 makes the order of its members meaningful.
+ */
+describe('selectMediaType — the answer does not depend on the order of the field', () => {
+  function bothWays(ranges: string[], offered: readonly string[]): [string | null, string | null] {
+    return [
+      selectMediaType(ranges.join(', '), offered),
+      selectMediaType([...ranges].reverse().join(', '), offered),
+    ];
+  }
+
+  it('ranks a parameterised wildcard above the bare wildcard it extends', () => {
+    const [forward, backward] = bothWays(
+      ['text/*;charset=utf-8;q=0', 'text/*'],
+      ['text/plain;charset=utf-8'],
+    );
+    expect(forward).toBeNull();
+    expect(backward).toBeNull();
+  });
+
+  it('ranks a parameterised type wildcard above the full wildcard', () => {
+    const [forward, backward] = bothWays(['*/*', 'text/*;charset=utf-8'], [
+      'text/plain;charset=utf-8',
+    ]);
+    expect(forward).toBe('text/plain;charset=utf-8');
+    expect(backward).toBe('text/plain;charset=utf-8');
+  });
+
+  /**
+   * Identical ranges cannot be ordered by specificity, so the tie is broken by
+   * taking the lower weight. A field that says both "yes" and "no" about one
+   * media type has not expressed a preference, and the safe reading of a
+   * contradiction is the refusal — a client sent a representation it told the
+   * server not to send is a worse outcome than a 406 it can retry without the
+   * duplicate.
+   */
+  it('reads a range contradicting itself as the refusal, whichever way round', () => {
+    const [forward, backward] = bothWays(['text/plain;q=0', 'text/plain;q=1'], ['text/plain']);
+    expect(forward).toBeNull();
+    expect(backward).toBeNull();
+  });
+
+  it('is order-independent across a field with every level of specificity', () => {
+    const ranges = ['*/*;q=0.1', 'text/*;q=0.4', 'text/plain;q=0.7', 'text/plain;format=flowed;q=0'];
+    const offered = ['text/plain;format=flowed', 'text/plain', 'text/csv'];
+    const [forward, backward] = bothWays(ranges, offered);
+    expect(forward).toBe('text/plain');
+    expect(backward).toBe('text/plain');
+  });
+});
