@@ -55,8 +55,12 @@ bytes to its decoder.
 | 11 | `643bd67` | green — offers must be concrete and unweighted |
 | 12 | `d280bd3` | red — 406 on the download route, 7 failing |
 | 13 | `18a17ee` | green — negotiate between the 404 and the read |
+| 15 | `4620921` | red — the answer must not depend on the order of the field, 2 failing |
+| 16 | `d47d759` | green — `moreSpecific` orders every pair of matches |
 
-43 unit cases on the parser, 10 on the controller, 9 end-to-end through
+Step 14 is the commit that added this document.
+
+47 unit cases on the parser, 10 on the controller, 9 end-to-end through
 `createApp`.
 
 ## What the cycles found that planning had not
@@ -109,6 +113,19 @@ that changed behaviour, so `parseOffer` was left as a one-line delegation — a
 deliberate duplication, so the asymmetry had somewhere to be visible — and the
 fix became step 10's failing test.
 
+**A property the module claimed and did not have (step 15).** Found by probing
+the finished parser rather than by a cycle, which is worth saying plainly:
+thirteen steps of tests did not catch it. `qualityFor`'s own comment said that
+reading the first match "would make the answer depend on the order the client
+happened to list its ranges in" — and the code did depend on it, twice.
+`specificity()` returned `2 + parameters.size` but counted parameters only on a
+fully concrete range, so `text/*;charset=utf-8` tied with `text/*` and reversing
+the field flipped the answer between a 406 and a 200; and a range written twice
+with two different weights ties by construction. The fix compares breadth and
+parameter count in order rather than adding them, because adding cannot be made
+to work — lift the count into the wildcard branches and `text/*;a=1;b=2`
+outranks `text/plain`. Every case in that block now runs forwards and reversed.
+
 **An API the integration demanded (step 13).** `selectMediaType` returns `null`
 for two unrelated reasons: the client refuses everything offered, and what the
 caller offered is not a media type. On the download route those must not share
@@ -133,6 +150,10 @@ would have carried that exact label had the client sent no `Accept`.
 - **Most specific wins, not highest or first.** That is §12.5.1's precedence
   rule, and it is what lets a field say "anything, except HTML". Reading the
   highest weight among matches serves the HTML the client just refused.
+- **The order of the field means nothing.** It is a set of statements, so
+  reversing it must not change the answer. Breadth is compared before parameter
+  count, and a range repeated with two different weights is read as the
+  refusal.
 - **Server order breaks ties.** `offered` is the server's preference; `>` rather
   than `>=` keeps the first offer at a given weight.
 - **Status ordering on the route:** 401 before 406 (nothing to negotiate with an
