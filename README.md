@@ -275,6 +275,16 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   why the object-level check has to run before the row is read, and why the
   outbound client confines requests to its base URL for an SSRF surface that
   does not exist yet.
+- [TDD kata: content negotiation](./docs/tdd-kata.md) — one feature built
+  red→green→refactor, one commit per step, with the cycles and their commit
+  hashes. The feature is `Accept` negotiation (`src/http/accept.ts`) wired into
+  `GET /v1/uploads/:objectId`, so the record is of how shipped code was actually
+  arrived at. What the cycles found: a `split(',')` that silently misread
+  correct requests and the second defect hiding behind it, three cases that
+  passed before the feature existed and why they were kept, one expectation that
+  was wrong and had to change, and a design flaw the refactor step exposed —
+  `selectMediaType('*/*', ['*/*'])` answering with a media type no route can
+  write a body in.
 
 ## Authentication
 
