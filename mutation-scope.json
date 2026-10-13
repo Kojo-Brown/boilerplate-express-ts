@@ -1,0 +1,73 @@
+{
+  "comment": [
+    "The single source of truth for what `pnpm test:mutation` mutates. Both",
+    "stryker.config.mjs (which mutates every `source`) and",
+    "jest.mutation.config.ts (which runs every `tests` entry, and nothing else)",
+    "are derived from this file, and src/tests/mutation-scope.test.ts fails",
+    "`pnpm test` if either drifts from it or if a path listed here has been",
+    "renamed away. A mutate glob that matches nothing is otherwise a line in a",
+    "log and a mutation score that goes up.",
+    "",
+    "Admission rule: every dependency a module has arrives as an argument — no",
+    "clock read, no `process.env`, no module-scope connection pool, nothing",
+    "ambient. That is the property that makes a surviving mutant mean a missing",
+    "assertion: a unit test can put the module in any state it likes, so there",
+    "is no mutant it was unable to reach. `sendByteRange` qualifies on that",
+    "rule even though it writes a response, because the response and the byte",
+    "source are both parameters. A module that opens its own pool does not, and",
+    "listing one would move the threshold rather than the tests.",
+    "",
+    "`tests` is deliberately only the module's own unit suite. A mutant killed",
+    "incidentally by an end-to-end test through `createApp()` is near-zero",
+    "evidence that the unit suite pins the behaviour down, and running the whole",
+    "suite against each of ~1000 mutants costs about 40x what running the one",
+    "suite does: 1h25m against 8 minutes, measured."
+  ],
+  "modules": [
+    {
+      "source": "src/http/accept.ts",
+      "tests": ["src/http/accept.test.ts"],
+      "why": "Proactive content negotiation (RFC 9110 §12.5.1): q-value parsing and specificity ordering, string in and a choice out."
+    },
+    {
+      "source": "src/http/byte-range.ts",
+      "tests": ["src/http/byte-range.test.ts"],
+      "why": "The 206/416/304 response contract. Both of its effects — the byte source and the response — are parameters, so a suite drives the whole contract with neither storage nor a socket."
+    },
+    {
+      "source": "src/http/conditional.ts",
+      "tests": ["src/http/conditional.test.ts"],
+      "why": "Precondition evaluation order for If-None-Match, If-Modified-Since and If-Range: a pure decision over parsed header values."
+    },
+    {
+      "source": "src/http/entity-tag.ts",
+      "tests": ["src/http/entity-tag.test.ts"],
+      "why": "Entity-tag grammar plus strong and weak comparison, which differ in exactly one place the parser must not blur."
+    },
+    {
+      "source": "src/http/range.ts",
+      "tests": ["src/http/range.test.ts"],
+      "why": "Range parsing and resolution against a known size: overflow clamping and unsatisfiable detection, all arithmetic."
+    },
+    {
+      "source": "src/http/retry-after.ts",
+      "tests": ["src/http/retry-after.test.ts"],
+      "why": "Retry-After in both of its grammars; the HTTP-date branch takes the reference instant as a parameter rather than reading a clock."
+    },
+    {
+      "source": "src/concurrency/etag.ts",
+      "tests": ["src/concurrency/etag.test.ts"],
+      "why": "If-Match / If-None-Match list parsing and the version-to-ETag mapping optimistic concurrency is denominated in."
+    },
+    {
+      "source": "src/concurrency/precondition.ts",
+      "tests": ["src/concurrency/precondition.test.ts"],
+      "why": "Which precondition failure a request earns — 428 for a missing If-Match, 412 for a stale one — is a decision over the parsed value."
+    },
+    {
+      "source": "src/lib/pagination.ts",
+      "tests": ["src/lib/pagination.test.ts"],
+      "why": "Opaque cursor encode/decode and page assembly; the decoder is an input boundary with nothing but arithmetic behind it."
+    }
+  ]
+}

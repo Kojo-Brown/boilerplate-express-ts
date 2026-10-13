@@ -63,6 +63,17 @@ describe('requireIfMatch', () => {
     expect(res.status).toBe(428);
   });
 
+  it('answers 428 for a header of nothing but whitespace', async () => {
+    // Over HTTP this is the case above in disguise: the parser strips the
+    // optional whitespace around a field value, so what reaches `req.get` is
+    // `''` and not `'   '`. Asserted anyway, and asserted again below against
+    // the step called directly, because the guard has to hold on both paths and
+    // only one of them is a request.
+    const res = await request(app).put('/things/1').set('If-Match', '   ');
+
+    expect(res.status).toBe(428);
+  });
+
   it('answers 400 for a header that is not an entity-tag list', async () => {
     const res = await request(app).put('/things/1').set('If-Match', 'seven');
 
@@ -98,8 +109,14 @@ describe('requireIfMatch', () => {
   it('throws typed errors rather than generic ones', () => {
     const withoutHeader = { get: () => undefined } as unknown as Request;
     const withWeakTag = { get: () => 'W/"7"' } as unknown as Request;
+    // Not reachable through the server — see the whitespace case above — and
+    // the reason the guard trims rather than comparing against `''`: a step is
+    // also called directly, by `compose()` and by a test, and there the value
+    // is whatever the caller passes.
+    const withBlankHeader = { get: () => '   ' } as unknown as Request;
 
     expect(() => requireIfMatch(withoutHeader)).toThrow(PreconditionRequiredError);
     expect(() => requireIfMatch(withWeakTag)).toThrow(PreconditionMalformedError);
+    expect(() => requireIfMatch(withBlankHeader)).toThrow(PreconditionRequiredError);
   });
 });

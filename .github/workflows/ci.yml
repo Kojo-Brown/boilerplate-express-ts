@@ -197,10 +197,59 @@ jobs:
           path: dist/
           retention-days: 1
 
+  mutation:
+    name: Mutation testing
+    runs-on: ubuntu-latest
+    # After the unit suite, not beside it: Stryker's first act is to run the
+    # tests unmutated, so on a red suite this job can only report the same
+    # failure eight minutes later and at four times the runner time.
+    needs: [test]
+    # The run is bounded (about 1000 mutants, ~8 minutes on a 4-core runner) and
+    # a mutant that hangs is already handled by `timeoutMS` in the Stryker
+    # config. This is the backstop for the run itself wedging.
+    timeout-minutes: 25
+
+    # One Node major, deliberately. Mutation score is a property of the test
+    # suite's assertions, not of the runtime: a mutant that survives on 22
+    # survives on 24. Running both would double the most expensive job in this
+    # workflow to re-measure the same number.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --strict-peer-dependencies
+
+      # No Postgres and no Redis service: the scope in `mutation-scope.json` is
+      # modules whose every dependency is a parameter, and the suites measured
+      # against them are their own unit suites. A scope entry that needed a
+      # database would be an entry that breaks its own admission rule.
+      - name: Mutation testing
+        run: pnpm test:mutation
+        env:
+          NODE_OPTIONS: --throw-deprecation
+
+      # Uploaded on failure as well — especially on failure. The score alone
+      # does not say which assertion went missing; the report names every
+      # survivor with its diff and the tests that ran against it.
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation/
+          retention-days: 7
+
   docker:
     name: Docker Push
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test, build]
+    needs: [lint, typecheck, test, build, mutation]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

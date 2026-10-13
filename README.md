@@ -41,6 +41,11 @@ Warnings are failures in CI, on every major:
 | ESLint rules configured as `warn` | `pnpm lint` runs `eslint --max-warnings=0` |
 | Node runtime deprecations (ours or a dependency's) | `NODE_OPTIONS=--throw-deprecation` on every gate step |
 
+One gate is not on that matrix: [mutation testing](./docs/mutation-testing.md)
+runs on Node 22 alone, because a mutation score is a property of the test
+suite's assertions and not of the runtime — a mutant that survives on 22
+survives on 24.
+
 To reproduce a CI failure locally, run the gate with the same flags:
 
 ```bash
@@ -285,6 +290,15 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   was wrong and had to change, and a design flaw the refactor step exposed —
   `selectMediaType('*/*', ['*/*'])` answering with a media type no route can
   write a body in.
+- [Mutation testing](./docs/mutation-testing.md) — Stryker over the protocol
+  parsers, with a `break` threshold in CI, why the scope is declared in
+  `mutation-scope.json` and measured against each module's own unit suite
+  rather than the whole one (eight minutes against eighty-five), and how to tell
+  a missing assertion from a mutant no test can kill. What the first run found
+  behind 2,898 passing tests: a realm-dependent `instanceof Error` that made
+  every cancelled download look like a failed transfer, a `catch` block whose
+  three outcomes no case could distinguish, and an exported function with no
+  test that coverage reported as covered.
 
 ## Authentication
 

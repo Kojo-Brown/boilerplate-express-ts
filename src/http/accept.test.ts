@@ -1,4 +1,4 @@
-import { selectMediaType } from '@/http/accept';
+import { isMediaType, selectMediaType } from '@/http/accept';
 
 /**
  * Cycle 1 — the degenerate case: one offer, and a field that either names it or
@@ -84,6 +84,25 @@ describe('selectMediaType — lists and wildcards', () => {
   it('does not invent a subtype-only wildcard', () => {
     expect(selectMediaType('*/json', ['application/json'])).toBe('application/json');
     expect(selectMediaType('*/json', ['text/csv'])).toBe('text/csv');
+  });
+
+  it('does not invent a subtype-only wildcard, in the one case where it would show', () => {
+    // The two cases above pass whether `*/json` is rejected as malformed or
+    // read as a wildcard that matches everything: an ignored field and a
+    // matching range both end at the server's first preference. A refusal is
+    // where the two part company — a `*/json` with any meaning at all would
+    // refuse this, and the correct answer is to ignore the field and serve.
+    expect(selectMediaType('*/json;q=0', ['application/json'])).toBe('application/json');
+  });
+
+  it('refuses everything a client refused everything with', () => {
+    expect(selectMediaType('*/*;q=0', ['application/json'])).toBeNull();
+    expect(selectMediaType('text/*;q=0', ['text/plain'])).toBeNull();
+  });
+
+  it('does not match one subtype against another under the same type', () => {
+    expect(selectMediaType('text/html', ['text/plain'])).toBeNull();
+    expect(selectMediaType('text/html, text/csv', ['text/plain'])).toBeNull();
   });
 
   /** An empty field is a field, and it is the one that accepts nothing. */
@@ -201,8 +220,11 @@ describe('selectMediaType — weights', () => {
   });
 
   it('accepts every weight the grammar does admit', () => {
-    for (const ok of ['q=1', 'q=1.0', 'q=1.000', 'q=0.5', 'q=0.25', 'q=0.125']) {
-      expect(selectMediaType(`application/json;${ok}`, ['application/json'])).toBe(
+    // Two offers, and `text/csv` first, so that "the weight was read" and "the
+    // field was unreadable and therefore ignored" are different answers: with
+    // one offer both come out as that offer and the case asserts nothing.
+    for (const ok of ['q=1', 'q=1.0', 'q=1.00', 'q=1.000', 'q=0.5', 'q=0.25', 'q=0.125']) {
+      expect(selectMediaType(`application/json;${ok}`, ['text/csv', 'application/json'])).toBe(
         'application/json',
       );
     }
@@ -448,5 +470,133 @@ describe('selectMediaType — the answer does not depend on the order of the fie
     const [forward, backward] = bothWays(ranges, offered);
     expect(forward).toBe('text/plain');
     expect(backward).toBe('text/plain');
+  });
+});
+
+/**
+ * Which of two matching ranges speaks for an offer.
+ *
+ * §12.5.1's precedence rule is the one part of this module whose correctness is
+ * invisible in the ordinary case: when every range matching an offer carries
+ * the same weight, any ordering of them produces the same answer, so a field
+ * has to disagree with itself before the ordering decides anything. Each case
+ * below is a field that does — a broad acceptance against a narrow refusal, or
+ * the reverse — and each asserts the answer the *narrower* range dictates.
+ */
+describe('selectMediaType — which matching range wins', () => {
+  it('lets a concrete range override the type wildcard it sits under', () => {
+    expect(selectMediaType('text/*;q=0, text/plain;q=1', ['text/plain'])).toBe('text/plain');
+    expect(selectMediaType('text/plain;q=1, text/*;q=0', ['text/plain'])).toBe('text/plain');
+  });
+
+  it('lets a type wildcard override the full wildcard it sits under', () => {
+    expect(selectMediaType('*/*;q=0, text/*;q=1', ['text/plain'])).toBe('text/plain');
+    expect(selectMediaType('text/*;q=1, */*;q=0', ['text/plain'])).toBe('text/plain');
+  });
+
+  it('ranks the three levels of breadth against each other at once', () => {
+    // `*/*` accepts, `text/*` refuses, `text/plain` accepts — so the answer is
+    // the concrete range's, and getting there requires all three breadths to be
+    // distinct. Collapsing any two of them into one value makes this field a
+    // tie, and a tie is decided by the lower weight: the refusal.
+    expect(selectMediaType('*/*;q=1, text/*;q=0, text/plain;q=1', ['text/plain'])).toBe(
+      'text/plain',
+    );
+  });
+
+  it('lets a parameterised range override the bare one of the same breadth', () => {
+    // Where breadth cannot separate two ranges, the parameter count does. Both
+    // of these match an offer carrying `charset=utf-8`; only the first one is
+    // *about* it.
+    expect(
+      selectMediaType('text/*;charset=utf-8;q=1, text/*;q=0', ['text/plain;charset=utf-8']),
+    ).toBe('text/plain;charset=utf-8');
+    expect(
+      selectMediaType('text/*;q=0, text/*;charset=utf-8;q=1', ['text/plain;charset=utf-8']),
+    ).toBe('text/plain;charset=utf-8');
+  });
+});
+
+/**
+ * The all-or-nothing policy, asserted where it is observable.
+ *
+ * A field this parser refuses is treated as absent (§5.5), so the answer is the
+ * server's first preference. That makes a malformed field indistinguishable
+ * from a matching one whenever the server has a single offer — both end at that
+ * offer — which is why every case here offers two: `application/json` first,
+ * and the field is always about `text/plain`. Reading the field would therefore
+ * answer `text/plain` or `null`, and ignoring it answers `application/json`.
+ */
+describe('selectMediaType — a field it cannot read', () => {
+  const OFFERS = ['application/json', 'text/plain'];
+
+  it.each([
+    ['te xt/plain', 'a type that is not a token'],
+    ['text/pl ain', 'a subtype that is not a token'],
+    ['text/plain;foo', 'a parameter with no value'],
+    ['text/plain;a b=c', 'a parameter name that is not a token'],
+    ['text/plain;q=0.5;q=1', 'two weights, which disagree about the preference'],
+    ['text/plain;note="a"b', 'junk after a closing quote'],
+    ['text/plain;note=a,b', 'an unquoted comma, which the list splitter already cut'],
+    ['text/plain;charset=utf-8;charset=us-ascii', 'one parameter named twice'],
+  ])('ignores %p — %s', (header) => {
+    expect(selectMediaType(header, OFFERS)).toBe('application/json');
+  });
+
+  it.each([
+    ['text /plain', 'whitespace around the slash, which the grammar does not have'],
+    ['text/plain;q=1;ext=1', 'an accept-ext after the weight, which is not a parameter'],
+    ['text/plain, ,', 'empty list members, which the # rule allows'],
+  ])('still reads %p — %s', (header) => {
+    expect(selectMediaType(header, OFFERS)).toBe('text/plain');
+  });
+
+  it('reads a quoted-pair as the octet it escapes, not as two', () => {
+    // The two spellings have to be interchangeable — that is what unescaping is
+    // for — so this is asserted across them: the field quotes and escapes, the
+    // offer does neither, and they are the same value or this does not match.
+    // `application/json` is in front for the reason the rest of this block has
+    // two offers: it is what "the field was unreadable" looks like.
+    expect(
+      selectMediaType('text/plain;note="a\\b"', ['application/json', 'text/plain;note=ab']),
+    ).toBe('text/plain;note=ab');
+  });
+
+  it('lets a quoted-pair escape the quote that would otherwise end the value', () => {
+    // The case that separates unescaping from *scanning*: the splitter has to
+    // step over an escaped `"` as well, or the quoted string closes early, the
+    // next `"` opens a new one, and the field ends mid-quote — unreadable, and
+    // discarded in full. Asserted with the same spelling on both sides, because
+    // what is being pinned is that the escaped quote is data: a parser that
+    // dropped the backslash would still match these two against each other.
+    const spelling = 'text/plain;note="a\\"b"';
+    expect(selectMediaType(spelling, ['application/json', spelling])).toBe(spelling);
+  });
+});
+
+/**
+ * `isMediaType`, which exists for the caller whose offer is data rather than a
+ * literal — a stored object's `Content-Type`, decided at upload time by
+ * something else. It answers the question `selectMediaType` conflates: whether
+ * the *offer* is a media type this module can negotiate with at all.
+ */
+describe('isMediaType', () => {
+  it.each(['text/plain', 'application/json', 'text/plain;charset=utf-8', 'TEXT/PLAIN'])(
+    'accepts %p',
+    (value) => {
+      expect(isMediaType(value)).toBe(true);
+    },
+  );
+
+  it.each([
+    ['*/*', 'a wildcard, which no route can write a body in'],
+    ['text/*', 'a subtype wildcard, for the same reason'],
+    ['text/plain;q=0.5', 'a weight, which is the client’s half of the grammar'],
+    ['text/plain;q=1', 'a weight even at its default value'],
+    ['plain', 'no subtype at all'],
+    ['text/pl ain', 'a subtype that is not a token'],
+    ['', 'nothing'],
+  ])('rejects %p — %s', (value) => {
+    expect(isMediaType(value)).toBe(false);
   });
 });

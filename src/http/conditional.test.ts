@@ -18,6 +18,22 @@ describe('evaluateReadPreconditions — If-None-Match', () => {
     expect(evaluateReadPreconditions({ ifNoneMatch: '*' }, validators)).toBe('not-modified');
   });
 
+  it('reads the wildcard through the whitespace a field value may carry', () => {
+    // `If-None-Match: *` padded out is still the wildcard, and the difference
+    // matters: read as a list instead, it is malformed, and a malformed
+    // If-None-Match is ignored — so the client that asked "only send it if it
+    // exists at all" gets the whole representation back.
+    expect(evaluateReadPreconditions({ ifNoneMatch: ' * ' }, validators)).toBe('not-modified');
+  });
+
+  it('proceeds when our own ETag is not a well-formed tag', () => {
+    // Nothing a client sent is wrong here; the representation's own validator
+    // is. Proceeding is the only safe answer — a 304 would tell the client its
+    // copy is current on the strength of a comparison that never happened.
+    expect(evaluateReadPreconditions({ ifNoneMatch: '"v1"' }, { etag: 'v1' })).toBe('proceed');
+    expect(evaluateReadPreconditions({ ifNoneMatch: '"v1"' }, { etag: '' })).toBe('proceed');
+  });
+
   it('uses weak comparison, so a W/-prefixed copy of the same tag still validates', () => {
     expect(evaluateReadPreconditions({ ifNoneMatch: 'W/"v1"' }, validators)).toBe('not-modified');
     expect(

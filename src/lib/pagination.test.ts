@@ -108,6 +108,36 @@ describe('buildCursorWhere', () => {
       buildCursorWhere({ cursor: arrayCursor, sortColumn: SORT_COL, direction: 'ASC' }),
     ).toThrow(AppError);
   });
+
+  it('throws AppError for a cursor whose payload is JSON null', () => {
+    // The one payload the `parsed === null` guard is load-bearing for, and the
+    // reason the guard cannot be reduced to the missing-field check below it:
+    // `typeof null === 'object'`, so without it `decoded[sortColumn]` is a
+    // property read on `null` — a TypeError, which is a 500 on a request whose
+    // only fault is a cursor somebody truncated. Every other non-object payload
+    // (a number, a string, an array) reaches the missing-field check and earns
+    // the same 400 either way.
+    const nullCursor = Buffer.from('null').toString('base64url');
+    expect(() =>
+      buildCursorWhere({ cursor: nullCursor, sortColumn: SORT_COL, direction: 'ASC' }),
+    ).toThrow(AppError);
+  });
+
+  it('answers every malformed cursor with the same 400 a client can act on', () => {
+    // The status, the code and the message are the API's contract with a client
+    // that has a stale or hand-edited cursor: a 400 whose body says
+    // INVALID_CURSOR is the difference between "drop the cursor and start from
+    // page one" and "retry forever". Asserted on both paths that produce it —
+    // an undecodable cursor and a decodable one that names no row — because
+    // they are thrown from two different places.
+    const expected = { statusCode: 400, code: 'INVALID_CURSOR', message: 'Invalid pagination cursor' };
+
+    for (const cursor of ['not!!!valid', encodeCursor({ id: 'abc' })]) {
+      expect(() => buildCursorWhere({ cursor, sortColumn: SORT_COL, direction: 'ASC' })).toThrow(
+        expect.objectContaining(expected),
+      );
+    }
+  });
 });
 
 describe('createCursor', () => {
@@ -149,6 +179,18 @@ describe('paginate', () => {
     expect(result.meta.limit).toBe(5);
   });
 
+  it('reports no next page when the rows exactly fill it', () => {
+    // The boundary the contract is built on: the caller fetches `limit + 1`, so
+    // `limit` rows back means the table ended here. Off by one in the other
+    // direction and the last page of every list hands out a cursor to nothing,
+    // which a client dutifully follows into an empty page.
+    const rows = [makeRow('1', '2024-01'), makeRow('2', '2024-02'), makeRow('3', '2024-03')];
+    const result = paginate(rows, 3, SORT_COL);
+    expect(result.data).toHaveLength(3);
+    expect(result.meta.hasNextPage).toBe(false);
+    expect(result.meta.nextCursor).toBeNull();
+  });
+
   it('slices off the extra row and provides nextCursor when rows.length > limit', () => {
     const rows = [
       makeRow('1', '2024-01'),
@@ -163,6 +205,23 @@ describe('paginate', () => {
     const decoded = decodeCursorRaw(result.meta.nextCursor!);
     expect(decoded['id']).toBe('2');
     expect(decoded['created_at']).toBe('2024-02');
+  });
+
+  it('takes the next cursor from the last row of the page, not the second', () => {
+    // Needs a page of three to say anything: on a page of two, "the last row"
+    // and "the row at index 1" are the same row, and a cursor built from the
+    // wrong end of the page re-serves rows the client already has — forever, if
+    // it is index 1, because every page then starts one row further back than
+    // it ends.
+    const rows = [
+      makeRow('1', '2024-01'),
+      makeRow('2', '2024-02'),
+      makeRow('3', '2024-03'),
+      makeRow('4', '2024-04'), // sentinel
+    ];
+    const { meta } = paginate(rows, 3, SORT_COL);
+    expect(meta.hasNextPage).toBe(true);
+    expect(decodeCursorRaw(meta.nextCursor!)).toEqual({ created_at: '2024-03', id: '3' });
   });
 
   it('returns empty data and null cursor for empty input', () => {

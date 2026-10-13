@@ -2,7 +2,7 @@ import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'jest.config.ts', 'jest.setup.ts'] },
+  { ignores: ['dist/**', 'reports/**', '.stryker-tmp/**', 'jest.config.ts', 'jest.mutation.config.ts', 'jest.setup.ts'] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {

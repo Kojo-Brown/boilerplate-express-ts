@@ -50,12 +50,23 @@ describe('parseEntityTagList', () => {
     ['   ', 'whitespace alone'],
     [',,,', 'separators alone'],
     ['"a\u0001b"', 'a control character inside the tag'],
+    ['a",', 'a value that starts unquoted, with a quote further along'],
   ])('rejects %p — %s', (header) => {
     expect(parseEntityTagList(header)).toBeNull();
   });
 
   it('accepts obs-text bytes inside a tag', () => {
     expect(parseEntityTagList('"café"')).toEqual([strong('café')]);
+  });
+
+  it('accepts the top of obs-text and stops there', () => {
+    // `obs-text` is %x80-FF — bytes, which is the whole point: a header is
+    // octets, and `charCodeAt` is reading UTF-16 code units of a string Node
+    // decoded as latin1. U+00FF is the last byte that can appear in one; U+20AC
+    // is not a byte at all and cannot have arrived in a header, so admitting it
+    // would mean the validator came from somewhere other than the wire.
+    expect(parseEntityTagList('"\u00ff"')).toEqual([strong('\u00ff')]);
+    expect(parseEntityTagList('"\u20ac"')).toBeNull();
   });
 });
 
@@ -116,6 +127,8 @@ describe('isEtagChar', () => {
     expect(isEtagChar(0x7e)).toBe(true);
     expect(isEtagChar(0x7f)).toBe(false); // DEL
     expect(isEtagChar(0x80)).toBe(true); // obs-text
+    expect(isEtagChar(0xff)).toBe(true); // the last byte obs-text admits
+    expect(isEtagChar(0x100)).toBe(false); // past a byte, so past the grammar
     expect(isEtagChar(0x1f)).toBe(false);
   });
 });

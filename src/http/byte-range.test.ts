@@ -64,6 +64,19 @@ describe('a plain GET', () => {
     expect(res.text).toBe(BODY.toString());
   });
 
+  it('asks the source for exactly the representation, inclusive of its last byte', async () => {
+    const { app, opened } = harness();
+    await request(app).get('/thing').expect(200);
+
+    // `open` is documented to be inclusive and to yield exactly
+    // `end - start + 1` bytes, so an interval that overruns the object by one
+    // is a contract violation a real backend answers in its own way: S3 is
+    // lenient and a file descriptor is not. It cannot be caught from the body
+    // either, because a `Buffer.subarray` past the end silently clamps — which
+    // is precisely why the interval is asserted and not just the bytes.
+    expect(opened).toEqual([{ start: 0, end: BODY.length - 1 }]);
+  });
+
   it('carries a conservative Cache-Control by default', () => {
     return request(harness().app)
       .get('/thing')
@@ -137,6 +150,12 @@ describe('Range', () => {
     expect(res.status).toBe(416);
     expect(res.headers['content-range']).toBe(`bytes */${BODY.length}`);
     expect(res.body.error.code).toBe('RANGE_NOT_SATISFIABLE');
+    // The message carries the length too, for the clients that read a body and
+    // not a `Content-Range`: a 416 with nothing in it leaves a resuming
+    // download with no way to work out what to ask for next.
+    expect(res.body.error.message).toBe(
+      `The requested range cannot be satisfied by a ${BODY.length}-byte representation`,
+    );
     // Nothing was read: a 416 is decided entirely from the size.
     expect(opened).toEqual([]);
   });
@@ -160,6 +179,34 @@ describe('Range', () => {
 
     expect(res.status).toBe(200);
     expect(res.text).toBe(BODY.toString());
+  });
+
+  it('ignores Range on a method it is not defined for', async () => {
+    // RFC 9110 §14.2 defines `Range` for GET. A POST that answers with a
+    // representation — this one echoes it back — must not turn into a 206 on
+    // the strength of a header that means nothing on it: a client sending a
+    // speculative `Range` header on every request would otherwise get a
+    // truncated answer and no way to tell it apart from a whole one.
+    const opened: { start: number; end: number }[] = [];
+    const app = express();
+    app.post('/thing', (req, res, next) => {
+      sendByteRange(req, res, {
+        size: BODY.length,
+        etag: ETAG,
+        contentType: 'text/plain',
+        open: (range) => {
+          opened.push({ start: range.start, end: range.end });
+          return Promise.resolve(Readable.from([BODY.subarray(range.start, range.end + 1)]));
+        },
+      }).catch(next);
+    });
+
+    const res = await request(app).post('/thing').set('Range', 'bytes=0-4');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-range']).toBeUndefined();
+    expect(res.text).toBe(BODY.toString());
+    expect(opened).toEqual([{ start: 0, end: BODY.length - 1 }]);
   });
 });
 
@@ -304,6 +351,133 @@ describe('failures', () => {
     expect(res.headers['content-range']).toBeUndefined();
   });
 
+});
+
+/**
+ * What happens to the transfer when the stream under it fails, observed from
+ * inside the handler rather than from the client.
+ *
+ * The three outcomes this module distinguishes are indistinguishable on the
+ * wire: a client that was going to see a dead socket sees one whether the
+ * handler swallowed the failure, destroyed the response with it, or rethrew it
+ * for the error middleware. What separates them is how `sendByteRange`'s own
+ * promise settles, so that is what these cases wait for.
+ */
+function streamFailureRig(
+  open: (res: express.Response) => Promise<Readable>,
+): {
+  app: Express;
+  /** Resolves once `sendByteRange` has settled, with how it settled. */
+  outcome: Promise<{ settled: 'resolved' | 'rejected'; error?: unknown; headersSent: boolean }>;
+} {
+  type Outcome = { settled: 'resolved' | 'rejected'; error?: unknown; headersSent: boolean };
+  let settle!: (value: Outcome) => void;
+  const outcome = new Promise<Outcome>((resolve) => {
+    settle = resolve;
+  });
+
+  const app = express();
+  app.get('/thing', (req, res) => {
+    sendByteRange(req, res, {
+      size: BODY.length,
+      etag: ETAG,
+      contentType: 'text/plain',
+      open: () => open(res),
+    })
+      .then(() => settle({ settled: 'resolved', headersSent: res.headersSent }))
+      .catch((error: unknown) => settle({ settled: 'rejected', error, headersSent: res.headersSent }));
+  });
+
+  return { app, outcome };
+}
+
+describe('a stream that fails under the transfer', () => {
+  it('swallows a premature close, whichever end of the pipe caused it', async () => {
+    // A paused video, a closed tab, `curl | head` — and, as here, a source that
+    // closes without delivering the bytes it promised. `pipeline` reports all of
+    // them as ERR_STREAM_PREMATURE_CLOSE and this module cannot tell them apart,
+    // which is the right trade only because of how the two differ in frequency:
+    // a cancelled download is ordinary traffic, several per minute on anything
+    // that streams, and rethrowing would fill the logs of a healthy service with
+    // its own users closing tabs. A backend that closes early is a bug, and the
+    // evidence for it is a truncated body against a declared `Content-Length`,
+    // not an exception here.
+    const { app, outcome } = streamFailureRig(() =>
+      Promise.resolve(
+        new Readable({
+          read(): void {
+            this.destroy();
+          },
+        }),
+      ),
+    );
+
+    await request(app).get('/thing').catch(() => undefined);
+
+    await expect(outcome).resolves.toMatchObject({ settled: 'resolved', headersSent: false });
+  });
+
+  it('swallows a client that hung up after the first bytes', async () => {
+    // The same close, arriving from the other end and later: the response is
+    // gone, so there is nobody left to tell and nothing left to send.
+    const { app, outcome } = streamFailureRig((res) => {
+      res.destroy();
+      return Promise.resolve(Readable.from([BODY]));
+    });
+
+    await request(app).get('/thing').catch(() => undefined);
+
+    await expect(outcome).resolves.toMatchObject({ settled: 'resolved' });
+  });
+
+  it('hands an error before the first byte to the error middleware', async () => {
+    // Nothing has been written, so the response is still a response: a 503 is
+    // available, and it is far more use to a client than a dead socket.
+    // Swallowing here would leave the request hanging until something else
+    // timed out on it.
+    const { app, outcome } = streamFailureRig(() =>
+      Promise.resolve(
+        new Readable({
+          read(): void {
+            this.destroy(new Error('backend went away'));
+          },
+        }),
+      ),
+    );
+
+    await request(app).get('/thing').catch(() => undefined);
+
+    await expect(outcome).resolves.toMatchObject({
+      settled: 'rejected',
+      error: { message: 'backend went away' },
+      headersSent: false,
+    });
+  });
+
+  it('destroys the response, rather than rethrowing, once bytes are out', async () => {
+    // The head is committed and part of the body is on the wire, so there is no
+    // status left to send: `next(err)` would have the error middleware write a
+    // second set of headers onto a response that already has some. Destroying
+    // with the error is the only honest ending, and the declared
+    // `Content-Length` is what lets the client see the body was cut short.
+    const { app, outcome } = streamFailureRig(() =>
+      Promise.resolve(
+        new Readable({
+          read(): void {
+            this.push(BODY.subarray(0, 4));
+            this.destroy(new Error('read failed mid-object'));
+          },
+        }),
+      ),
+    );
+
+    await request(app).get('/thing').catch(() => undefined);
+
+    await expect(outcome).resolves.toMatchObject({ settled: 'resolved', headersSent: true });
+  });
+});
+
+describe('failures', () => {
   it('destroys the connection when the source fails after the body has started', async () => {
     // There is no way to turn a half-sent 200 into a 500, and `next(err)` would
     // have the error handler write a second set of headers onto a response that

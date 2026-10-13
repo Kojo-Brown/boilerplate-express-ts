@@ -1,4 +1,4 @@
-import { formatETag, parseIfMatch } from '@/concurrency/etag';
+import { ETAG_HEADER, IF_MATCH_HEADER, formatETag, parseIfMatch } from '@/concurrency/etag';
 import type { Precondition } from '@/concurrency/concurrency.types';
 
 /** The parsed precondition, or the failure reason — whichever the case is about. */
@@ -22,10 +22,33 @@ function reasonFor(header: string): string {
   return result.reason;
 }
 
+/** The largest `version` a Postgres `integer` column can hold. */
+const MAX_VERSION = 2_147_483_647;
+
+describe('the header names', () => {
+  it('are spelled the way the wire spells them', () => {
+    // Not a tautology: these two strings are the whole interface. A typo in
+    // either is a conditional write that silently stops being conditional —
+    // the client sends `If-Match`, nothing reads it, and the lost update the
+    // header exists to prevent happens with the tag sitting in the request.
+    expect(ETAG_HEADER).toBe('ETag');
+    expect(IF_MATCH_HEADER).toBe('If-Match');
+  });
+});
+
 describe('formatETag', () => {
   it('emits a strong, quoted, decimal tag', () => {
     expect(formatETag(1)).toBe('"1"');
     expect(formatETag(4096)).toBe('"4096"');
+  });
+
+  it('accepts the largest version the column can hold', () => {
+    // The boundary itself, from the inside. `version > MAX_VERSION` and
+    // `version >= MAX_VERSION` disagree on exactly this value, and only the
+    // first is right: a row *can* reach 2147483647, and refusing to tag it
+    // would make the most-written row in the table the one row no client can
+    // write conditionally.
+    expect(formatETag(MAX_VERSION)).toBe('"2147483647"');
   });
 
   it('refuses a version no row can hold', () => {
@@ -36,7 +59,14 @@ describe('formatETag', () => {
     expect(() => formatETag(-1)).toThrow(RangeError);
     expect(() => formatETag(1.5)).toThrow(RangeError);
     expect(() => formatETag(Number.NaN)).toThrow(RangeError);
-    expect(() => formatETag(2_147_483_648)).toThrow(RangeError);
+    expect(() => formatETag(MAX_VERSION + 1)).toThrow(RangeError);
+  });
+
+  it('says which version it refused', () => {
+    // This throw reaches a developer, not a client — nothing in the request
+    // chooses the number — so the number is the entire content of the message.
+    expect(() => formatETag(0)).toThrow('version 0');
+    expect(() => formatETag(MAX_VERSION + 1)).toThrow(`version ${MAX_VERSION + 1}`);
   });
 });
 
@@ -58,6 +88,14 @@ describe('parseIfMatch: the wildcard', () => {
 describe('parseIfMatch: entity-tag lists', () => {
   it('reads a single tag', () => {
     expect(versionsFor('"7"')).toEqual([7]);
+  });
+
+  it('reads a tag of more than one digit', () => {
+    // `"7"` on its own cannot tell a correct version pattern from one that
+    // accepts a digit followed by anything but digits, and every row past its
+    // tenth write carries a tag like these.
+    expect(versionsFor('"4096"')).toEqual([4096]);
+    expect(versionsFor(`"${MAX_VERSION}"`)).toEqual([MAX_VERSION]);
   });
 
   it('reads every tag in a list, because If-Match passes if any of them matches', () => {
@@ -101,6 +139,19 @@ describe('parseIfMatch: tags that cannot name a version', () => {
   it('drops a tag above the column’s range', () => {
     expect(versionsFor('"2147483648"')).toEqual([]);
     expect(versionsFor('"99999999999999999999"')).toEqual([]);
+  });
+
+  it('drops a tag that only starts like a number', () => {
+    // The anchors on the version pattern, which are the difference between
+    // reading a tag and reading a prefix of one. `"1e3"` and `"1.5"` are both
+    // legal entity-tags and neither is a tag this API ever emitted; a pattern
+    // that matched their first character would hand `Number()` the whole string
+    // and come back with version 1000 and version 1.5 — the second of which is
+    // not an integer any row can be at, so the conditional write it produced
+    // would compare a row against a version that cannot exist.
+    expect(versionsFor('"1e3"')).toEqual([]);
+    expect(versionsFor('"1.5"')).toEqual([]);
+    expect(versionsFor('"7x"')).toEqual([]);
   });
 
   it('drops the empty tag', () => {

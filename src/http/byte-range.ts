@@ -231,8 +231,17 @@ function headerValue(req: Request, name: string): string | undefined {
  * the logs of any service that streams with its own healthy traffic.
  */
 function isPrematureClose(err: unknown): boolean {
+  // Deliberately not `err instanceof Error`. `pipeline` constructs its error in
+  // whatever realm `node:stream` was loaded in, and `instanceof` is identity on
+  // a particular realm's `Error`: inside a vm context — Jest's test environment,
+  // but equally a worker thread or a sandboxed plugin host — the check is false
+  // for an error that is unmistakably Node's, and this function would then
+  // report every cancelled download as a transfer that failed. The `code` is
+  // the thing actually being asked about, so the `code` is what is tested; the
+  // two guards in front of it are only so that reading it cannot throw.
   return (
-    err instanceof Error &&
+    typeof err === 'object' &&
+    err !== null &&
     (err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE'
   );
 }
