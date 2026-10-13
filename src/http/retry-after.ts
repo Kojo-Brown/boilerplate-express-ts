@@ -30,6 +30,12 @@ export function parseRetryAfter(value: string | null | undefined, now: number): 
   if (value === null || value === undefined) return null;
 
   const field = value.trim();
+  // Redundant, and kept for the sentence it is: `Number('')` is `0`, so an
+  // empty field already falls out of the numeric guard below as `null`, and no
+  // input can tell this line from its absence. It stays because "an absent
+  // header and a blank one mean the same thing" is worth saying where the
+  // grammar is, rather than resting on a coercion three branches away.
+  // Stryker disable next-line all: Number('') is 0, so the numeric guard below returns null for the same inputs
   if (field === '') return null;
 
   // The integer branch is tried first and matched strictly, because

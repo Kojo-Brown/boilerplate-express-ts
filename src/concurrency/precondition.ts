@@ -54,6 +54,11 @@ export type WithPrecondition<TReq extends Request> = TReq & { precondition: Prec
 export function requireIfMatch<TReq extends Request>(req: TReq): WithPrecondition<TReq> {
   const header = req.get(IF_MATCH_HEADER);
 
+  // The `.trim()` is not reachable over HTTP — the parser strips the optional
+  // whitespace around a field value before Express sees it, so `If-Match:` with
+  // nothing but spaces after it arrives as `''`. It is reachable from a step
+  // invoked directly, which is how this function is also used, and both of
+  // those are pinned in `precondition.test.ts`.
   if (header === undefined || header.trim() === '') {
     throw new PreconditionRequiredError(IF_MATCH_HEADER);
   }

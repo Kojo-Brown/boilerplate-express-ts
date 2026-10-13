@@ -10,3 +10,8 @@ coverage
 # Redis writes this into whatever directory it was started from, so running a
 # local server for the Redis-backed suites drops it in the repository root.
 dump.rdb
+
+# Stryker: mutation run scratch space (instrumented copy of the project, the
+# incremental cache) and the HTML report it writes.
+.stryker-tmp
+reports

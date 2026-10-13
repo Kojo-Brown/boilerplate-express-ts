@@ -177,7 +177,18 @@ export async function sendByteRange(
     // source, and destroying the source is what aborts the underlying request.
     await pipeline(stream, res);
   } catch (err) {
-    if (isPrematureClose(err)) return;
+    if (isPrematureClose(err)) {
+      // `pipeline` normally destroys the source itself, and on a client that
+      // left mid-transfer it has. The one case it does not is a response that
+      // was already destroyed when the pipe started — `open` is a network round
+      // trip for a real backend, and a client that hangs up inside that window
+      // leaves nothing to pipe into. Node 24 refuses that outright and cleans up
+      // neither stream, which would leave the read it just started running
+      // against the backend with nobody to hand the bytes to: exactly the leak
+      // `pipeline` is here to prevent. Destroying it again costs nothing.
+      stream.destroy();
+      return;
+    }
     if (res.headersSent) {
       res.destroy(err instanceof Error ? err : undefined);
       return;
@@ -231,8 +242,33 @@ function headerValue(req: Request, name: string): string | undefined {
  * the logs of any service that streams with its own healthy traffic.
  */
 function isPrematureClose(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err as NodeJS.ErrnoException).code === 'ERR_STREAM_PREMATURE_CLOSE'
-  );
+  // Deliberately not `err instanceof Error`. `pipeline` constructs its error in
+  // whatever realm `node:stream` was loaded in, and `instanceof` is identity on
+  // a particular realm's `Error`: inside a vm context — Jest's test environment,
+  // but equally a worker thread or a sandboxed plugin host — the check is false
+  // for an error that is unmistakably Node's, and this function would then
+  // report every cancelled download as a transfer that failed. The `code` is
+  // the thing actually being asked about, so the `code` is what is tested; the
+  // two guards in front of it are only so that reading it cannot throw.
+  if (typeof err !== 'object' || err === null) return false;
+
+  const { code } = err as NodeJS.ErrnoException;
+
+  // Two codes for one condition, because the supported runtimes disagree about
+  // which to use. `ERR_STREAM_PREMATURE_CLOSE` is the pipe running and an end
+  // closing under it, on both. `ERR_STREAM_UNABLE_TO_PIPE` is Node 24 for a
+  // destination that was *already* destroyed when the pipe started, where Node
+  // 22 reports a premature close — so on 24 alone, a client that hangs up
+  // during `open` would otherwise reach the error middleware and be logged as a
+  // failed transfer. Measured on 22.22.0 and 24.21.0.
+  //
+  // The mutation gate runs on Node 22 only, which never produces the second
+  // code, so no input there can tell the second comparison from a constant.
+  // That is what the directive on the next line records; the test matrix is
+  // what covers the line instead. (The directive has to be the last comment
+  // before the code, and its own text is the only place the two words below may
+  // appear — anywhere else in a comment they parse as a second directive, with
+  // the words that follow read as a mutator name.)
+  // Stryker disable next-line all: the mutation gate runs on Node 22, which reports this condition as a premature close, so no input here reaches the second code
+  return code === 'ERR_STREAM_PREMATURE_CLOSE' || code === 'ERR_STREAM_UNABLE_TO_PIPE';
 }

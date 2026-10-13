@@ -43,6 +43,15 @@ describe('parseRangeHeader', () => {
     expect(parseRangeHeader('BYTES=0-1')).toEqual([int(0, 1)]);
   });
 
+  it('tolerates whitespace around the range unit, where the grammar has none', () => {
+    // Lenient on the outside of the unit, strict on the inside of the spec —
+    // the rejection list below keeps `bytes=0 - 10` malformed. The asymmetry is
+    // the usual one: a stray space before the `=` loses nothing by being
+    // accepted, while one inside a spec would have to be guessed about.
+    expect(parseRangeHeader('bytes =0-1')).toEqual([int(0, 1)]);
+    expect(parseRangeHeader(' bytes\t=0-1')).toEqual([int(0, 1)]);
+  });
+
   it('accepts leading zeros, which the grammar permits', () => {
     expect(parseRangeHeader('bytes=0000-0010')).toEqual([int(0, 10)]);
   });
@@ -52,6 +61,7 @@ describe('parseRangeHeader', () => {
     ['bytes', 'no "=" at all'],
     ['bytes=', 'an empty range-set'],
     ['bytes=abc', 'a non-numeric spec'],
+    ['bytes=5', 'a position with no hyphen, which names no interval'],
     ['bytes=-', 'a hyphen with nothing on either side'],
     ['bytes=10-5', 'a last-pos below the first-pos'],
     ['bytes=1-2-3', 'an extra hyphen'],
@@ -78,6 +88,17 @@ describe('parseRangeHeader', () => {
 
   it('does not treat leading zeros as length when clamping', () => {
     expect(parseRangeHeader(`bytes=0-${'0'.repeat(40)}42`)).toEqual([int(0, 42)]);
+  });
+
+  it('reads a position at the clamp boundary as itself', () => {
+    // 15 digits is the longest position carried through exactly, and the
+    // boundary belongs on the inside: 999999999999999 is well below
+    // `MAX_SAFE_INTEGER`, so clamping it would throw away a real offset — and
+    // would do it to the only sizes where the clamp is observable at all.
+    const last = 999_999_999_999_999;
+    expect(String(last)).toHaveLength(15);
+    expect(Number.isSafeInteger(last)).toBe(true);
+    expect(parseRangeHeader(`bytes=0-${last}`)).toEqual([int(0, last)]);
   });
 });
 
@@ -147,6 +168,13 @@ describe('resolveRange', () => {
   it('rejects a size that is not a byte count', () => {
     expect(() => resolveRange([int(0, 1)], -1)).toThrow(RangeError);
     expect(() => resolveRange([int(0, 1)], 1.5)).toThrow(RangeError);
+  });
+
+  it('says what it was given when it refuses a size', () => {
+    // This throw is a bug report, not a response: nothing in the request
+    // chooses `size`, so a caller reading it needs the value that was wrong.
+    expect(() => resolveRange([int(0, 1)], -1)).toThrow('received -1');
+    expect(() => resolveRange([int(0, 1)], Number.NaN)).toThrow('received NaN');
   });
 });
 

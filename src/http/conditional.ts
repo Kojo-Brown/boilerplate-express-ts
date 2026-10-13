@@ -136,6 +136,12 @@ function matchesIfNoneMatch(header: string, currentETag: string): boolean {
  * the content.
  */
 function parseHttpDate(value: string): number | null {
+  // The `.trim()` is intent, not behaviour: `Date.parse` skips leading and
+  // trailing whitespace itself — measured, for SP, HTAB, LF, NBSP and U+2028 —
+  // so removing it changes no answer this function can give and no test can
+  // tell the two apart. Stated here rather than left as a survivor on the
+  // mutation report, where it reads as a missing assertion.
+  // Stryker disable next-line MethodExpression: Date.parse already skips surrounding whitespace, so no input distinguishes this from value
   const parsed = Date.parse(value.trim());
   if (Number.isNaN(parsed)) return null;
   return Math.floor(parsed / 1000) * 1000;
