@@ -368,9 +368,20 @@ function streamFailureRig(
 ): {
   app: Express;
   /** Resolves once `sendByteRange` has settled, with how it settled. */
-  outcome: Promise<{ settled: 'resolved' | 'rejected'; error?: unknown; headersSent: boolean }>;
+  outcome: Promise<{
+    settled: 'resolved' | 'rejected';
+    error?: unknown;
+    headersSent: boolean;
+    /** Whether the byte source was cleaned up — `undefined` if never opened. */
+    sourceDestroyed?: boolean;
+  }>;
 } {
-  type Outcome = { settled: 'resolved' | 'rejected'; error?: unknown; headersSent: boolean };
+  type Outcome = {
+    settled: 'resolved' | 'rejected';
+    error?: unknown;
+    headersSent: boolean;
+    sourceDestroyed?: boolean;
+  };
   let settle!: (value: Outcome) => void;
   const outcome = new Promise<Outcome>((resolve) => {
     settle = resolve;
@@ -378,14 +389,24 @@ function streamFailureRig(
 
   const app = express();
   app.get('/thing', (req, res) => {
+    let source: Readable | undefined;
+    const sourceDestroyed = (): boolean | undefined => source?.destroyed;
+
     sendByteRange(req, res, {
       size: BODY.length,
       etag: ETAG,
       contentType: 'text/plain',
-      open: () => open(res),
+      open: async () => {
+        source = await open(res);
+        return source;
+      },
     })
-      .then(() => settle({ settled: 'resolved', headersSent: res.headersSent }))
-      .catch((error: unknown) => settle({ settled: 'rejected', error, headersSent: res.headersSent }));
+      .then(() =>
+        settle({ settled: 'resolved', headersSent: res.headersSent, sourceDestroyed: sourceDestroyed() }),
+      )
+      .catch((error: unknown) =>
+        settle({ settled: 'rejected', error, headersSent: res.headersSent, sourceDestroyed: sourceDestroyed() }),
+      );
   });
 
   return { app, outcome };
@@ -417,9 +438,36 @@ describe('a stream that fails under the transfer', () => {
     await expect(outcome).resolves.toMatchObject({ settled: 'resolved', headersSent: false });
   });
 
-  it('swallows a client that hung up after the first bytes', async () => {
-    // The same close, arriving from the other end and later: the response is
-    // gone, so there is nobody left to tell and nothing left to send.
+  it('swallows a client that hangs up mid-transfer, and stops reading', async () => {
+    // The same close arriving from the other end: the response goes away after
+    // the first chunk is on the wire. Nobody is left to tell — and the read has
+    // to stop, which for a 40 GB object in S3 is the difference between a
+    // cancelled download and one this process goes on paying for.
+    const { app, outcome } = streamFailureRig((res) =>
+      Promise.resolve(
+        new Readable({
+          read(): void {
+            this.push(BODY.subarray(0, 4));
+            res.destroy();
+          },
+        }),
+      ),
+    );
+
+    await request(app).get('/thing').catch(() => undefined);
+
+    await expect(outcome).resolves.toMatchObject({ settled: 'resolved', sourceDestroyed: true });
+  });
+
+  it('swallows a client already gone by the time the bytes were ready', async () => {
+    // The window is `open`, which for a real backend is a network round trip: a
+    // client that hangs up inside it leaves the response destroyed before there
+    // is anything to pipe into. The two supported runtimes disagree about this
+    // one — Node 22 calls it a premature close and cleans both streams up,
+    // Node 24 refuses the pipe with ERR_STREAM_UNABLE_TO_PIPE and cleans up
+    // neither — so `sourceDestroyed` is the assertion that matters here. Without
+    // it the leg that leaks a storage read on every cancelled download is the
+    // one that still reports green.
     const { app, outcome } = streamFailureRig((res) => {
       res.destroy();
       return Promise.resolve(Readable.from([BODY]));
@@ -427,7 +475,7 @@ describe('a stream that fails under the transfer', () => {
 
     await request(app).get('/thing').catch(() => undefined);
 
-    await expect(outcome).resolves.toMatchObject({ settled: 'resolved' });
+    await expect(outcome).resolves.toMatchObject({ settled: 'resolved', sourceDestroyed: true });
   });
 
   it('hands an error before the first byte to the error middleware', async () => {

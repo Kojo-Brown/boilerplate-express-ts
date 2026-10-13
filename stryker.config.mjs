@@ -51,11 +51,11 @@ export default {
   mutate: scope.modules.map((module) => module.source),
 
   // `break` is the gate: below it, `pnpm test:mutation` exits non-zero and the
-  // CI job fails. 92 against a measured 94.54, which is about sixteen mutants
+  // CI job fails. 92 against a measured 94.35, which is about fifteen mutants
   // of headroom: enough that a refactor introducing a couple of equivalent
   // mutants does not block an unrelated pull request, tight enough that a
-  // deleted assertion trips it. Every one of the 34 survivors behind that
-  // number has been read and is equivalent — see `docs/mutation-testing.md`.
+  // deleted assertion trips it. Every one of the 35 mutants behind that number
+  // has been read and is equivalent — see `docs/mutation-testing.md`.
   //
   // Raise it when the score rises. The one thing never to do is lower it to
   // make a red run green: a survivor is either worth a test, or worth a

@@ -25,7 +25,7 @@ its own line of source. CI keeps it as an artifact on every run, pass or fail.
 ## What is measured, and what is not
 
 Mutation testing is the most expensive gate in this repository by an order of
-magnitude: a full run is 947 mutants and nine minutes of four CPUs, where the
+magnitude: a full run is 953 mutants and nine minutes of four CPUs, where the
 entire unit suite is 60 seconds. Scoping it is therefore not a
 concession, it is the design, and the scope is declared in
 [`mutation-scope.json`](../mutation-scope.json) — one entry per module, each
@@ -124,16 +124,23 @@ was red and I wanted it green" is not.
 
 `thresholds.break` in [`stryker.config.mjs`](../stryker.config.mjs) is the gate:
 below it, `stryker run` exits non-zero and the CI job fails. It is 92 against a
-measured 94.54 — about sixteen mutants of headroom, so that an equivalent mutant
+measured 94.35 — about fifteen mutants of headroom, so that an equivalent mutant
 or two introduced by an unrelated refactor does not block a pull request, while
 a real loss of assertion strength does.
 
-All 34 survivors behind that number have been read, and every one of them is
+All 35 mutants behind that number — 34 survivors and one the suite never
+reaches — have been read, and every one of them is
 equivalent: loop bounds where the index past the end reads `undefined` and the
 loop exits anyway, `type === '*' || isToken(type)` where `*` is itself a `tchar`
 so the first half can never decide anything, `instanceof`-style guards in front
 of a property read that is already safe on a primitive. If you add a module to
 the scope, expect its first measurement to be well under 94.
+
+One blind spot the score cannot report on itself: this job runs on **one** Node
+major. A line that exists for the behaviour of another one — `code ===
+'ERR_STREAM_UNABLE_TO_PIPE'` in `isPrematureClose` is exactly that — has no
+input on Node 22 that reaches it, so it carries a `// Stryker disable` naming
+that reason. What covers it is the test matrix, not this gate.
 
 Raise it when the score rises. The one thing never to do is lower it: a
 survivor is either worth a test, or worth a disable comment with a reason.
@@ -155,9 +162,16 @@ them:
   inverting either branch, changed nothing any test could see: the three
   outcomes it distinguishes — swallow a hang-up, destroy a half-sent response,
   rethrow for the error middleware — are identical from the client's side, which
-  is where every case was looking. They are now observed from inside the handler.
+  is where every case was looking. They are now observed from inside the
+  handler. Writing those cases then turned up a *runtime* difference this gate
+  cannot see for itself: when a client hangs up during `open`, Node 22 reports a
+  premature close and cleans both streams up, while Node 24 refuses the pipe
+  with `ERR_STREAM_UNABLE_TO_PIPE` and cleans up neither — so on 24, a download
+  cancelled inside that window both reached the error middleware as a failure
+  and leaked the storage read it had just started. The fix is four lines, and it
+  was CI's Node 24 leg that found it, on a case mutation testing had asked for.
 - **`isMediaType` had no test at all.** An exported function, reported as covered
   because `selectMediaType` runs the same parser underneath it.
 
-Thirty-five cases later, the same nine modules score 94.54%. None of the three
-findings above was a failing test, a lint error, or a drop in line coverage.
+None of those findings was a failing test, a lint error, or a drop in line
+coverage.
