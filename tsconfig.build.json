@@ -8,11 +8,18 @@
   // shipping it in `dist/` would be shipping a thing that must never be started
   // in production. It is still typechecked, because `pnpm typecheck` uses the
   // base config, which includes all of `src`.
+  //
+  // `src/tests/` is excluded wholesale rather than by suffix. Everything in it
+  // is test infrastructure by definition, but not all of it is named like a
+  // test: `property.ts` is a module of fast-check arbitraries, and a dist/
+  // carrying it would carry a `require('fast-check')` — a devDependency, absent
+  // from the production image — reachable from the shipped tree.
   "exclude": [
     "node_modules",
     "dist",
     "**/*.test.ts",
     "**/*.fixture.ts",
+    "src/tests/**",
     "jest.config.ts",
     "jest.setup.ts"
   ]

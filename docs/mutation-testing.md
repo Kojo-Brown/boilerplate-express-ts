@@ -58,6 +58,14 @@ is listed against, if Stryker's `mutate` stops matching the declared scope, or
 if `testMatch` is widened back to the default. Each of those would otherwise
 make the score go *up* while meaning less.
 
+"Its own unit suite" is both suites where a module has two: the example suite
+and the `*.property.test.ts` suite beside it. That was measured rather than
+assumed — the property suites take the score from 94.35 to 94.68 and the run
+from 7m11s to 7m29s, killing two mutants no example could, both of them a
+wildcard media range quietly ceasing to be a wildcard. See
+[property-based testing](./property-based-testing.md). End-to-end suites stay
+out, for the reason above.
+
 ## Reading a survivor
 
 The report gives you a diff. Work out which input reaches it, then decide which
