@@ -17,16 +17,27 @@
     "source are both parameters. A module that opens its own pool does not, and",
     "listing one would move the threshold rather than the tests.",
     "",
-    "`tests` is deliberately only the module's own unit suite. A mutant killed",
-    "incidentally by an end-to-end test through `createApp()` is near-zero",
-    "evidence that the unit suite pins the behaviour down, and running the whole",
-    "suite against each of ~1000 mutants costs about 40x what running the one",
-    "suite does: 1h25m against 8 minutes, measured."
+    "`tests` is the module's own unit suites and nothing else: its example",
+    "suite, and its `*.property.test.ts` suite where it has one. A mutant",
+    "killed incidentally by an end-to-end test through `createApp()` is",
+    "near-zero evidence that the unit suite pins the behaviour down, and",
+    "running the whole suite against each of ~1000 mutants costs about 40x what",
+    "running the module's own does: 1h25m against 8 minutes, measured.",
+    "",
+    "The property suites were measured in and not assumed in. Without them the",
+    "score is 94.35 with 34 survivors; with them it is 94.68 with 32, and the",
+    "run goes from 7m11s to 7m29s on two workers. The two mutants they kill are",
+    "both the same shape — `type === '*'` rewritten to `type === \"\"`, which",
+    "quietly stops a wildcard range being a wildcard. No example could see it:",
+    "a field that parses as star-slash-star and a field discarded as malformed",
+    "both end up serving the server's first offer, and only",
+    "`selectMediaType('*/*;q=0', offered)` — a refusal, which must be null and",
+    "not that first offer — tells the two apart."
   ],
   "modules": [
     {
       "source": "src/http/accept.ts",
-      "tests": ["src/http/accept.test.ts"],
+      "tests": ["src/http/accept.test.ts", "src/http/accept.property.test.ts"],
       "why": "Proactive content negotiation (RFC 9110 §12.5.1): q-value parsing and specificity ordering, string in and a choice out."
     },
     {
@@ -36,27 +47,27 @@
     },
     {
       "source": "src/http/conditional.ts",
-      "tests": ["src/http/conditional.test.ts"],
+      "tests": ["src/http/conditional.test.ts", "src/http/conditional.property.test.ts"],
       "why": "Precondition evaluation order for If-None-Match, If-Modified-Since and If-Range: a pure decision over parsed header values."
     },
     {
       "source": "src/http/entity-tag.ts",
-      "tests": ["src/http/entity-tag.test.ts"],
+      "tests": ["src/http/entity-tag.test.ts", "src/http/entity-tag.property.test.ts"],
       "why": "Entity-tag grammar plus strong and weak comparison, which differ in exactly one place the parser must not blur."
     },
     {
       "source": "src/http/range.ts",
-      "tests": ["src/http/range.test.ts"],
+      "tests": ["src/http/range.test.ts", "src/http/range.property.test.ts"],
       "why": "Range parsing and resolution against a known size: overflow clamping and unsatisfiable detection, all arithmetic."
     },
     {
       "source": "src/http/retry-after.ts",
-      "tests": ["src/http/retry-after.test.ts"],
+      "tests": ["src/http/retry-after.test.ts", "src/http/retry-after.property.test.ts"],
       "why": "Retry-After in both of its grammars; the HTTP-date branch takes the reference instant as a parameter rather than reading a clock."
     },
     {
       "source": "src/concurrency/etag.ts",
-      "tests": ["src/concurrency/etag.test.ts"],
+      "tests": ["src/concurrency/etag.test.ts", "src/concurrency/etag.property.test.ts"],
       "why": "If-Match / If-None-Match list parsing and the version-to-ETag mapping optimistic concurrency is denominated in."
     },
     {
@@ -66,7 +77,7 @@
     },
     {
       "source": "src/lib/pagination.ts",
-      "tests": ["src/lib/pagination.test.ts"],
+      "tests": ["src/lib/pagination.test.ts", "src/lib/pagination.property.test.ts"],
       "why": "Opaque cursor encode/decode and page assembly; the decoder is an input boundary with nothing but arithmetic behind it."
     }
   ]

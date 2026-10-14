@@ -299,6 +299,14 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   every cancelled download look like a failed transfer, a `catch` block whose
   three outcomes no case could distinguish, and an exported function with no
   test that coverage reported as covered.
+- [Property-based testing](./docs/property-based-testing.md) — fast-check over
+  the same protocol parsers, as round-trip, metamorphic and invariant
+  statements: that a resolved `Range` never names a byte the representation
+  does not have, that the answer to an `Accept` field does not depend on the
+  order of its members, that paging a dataset to exhaustion returns every row
+  exactly once. Also why the seed is pinned, and why each suite that depends on
+  its generators meeting asserts the rate — two of those guards caught
+  generators that were producing 0% and 1% interesting cases.
 
 ## Authentication
 
