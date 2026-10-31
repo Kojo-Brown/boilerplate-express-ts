@@ -197,6 +197,50 @@ jobs:
           path: dist/
           retention-days: 1
 
+  integration:
+    name: Postgres integration (Testcontainers)
+    runs-on: ubuntu-latest
+    # After the unit suite for the reason the mutation job is: this run starts a
+    # container and migrates a database before it asserts anything, so on a red
+    # unit suite it can only report the same failure later and at more cost.
+    needs: [test]
+    # The suite itself is seconds; the bound is for a container pull that hangs
+    # rather than fails. `jest.integration.config.ts` already caps each test.
+    timeout-minutes: 15
+
+    # One Node major, deliberately. What these suites measure is PostgreSQL's
+    # behaviour and the SQL this codebase sends it — `deadlock_timeout` against
+    # `lock_timeout`, `SKIP LOCKED`, the two advisory lock spaces, whether every
+    # migration's `down` is honest. None of that is a property of the runtime,
+    # and the `pg` driver is already exercised on both majors by the `test` job.
+
+    # No `services:` block. The server is started by `globalSetup` through
+    # Testcontainers, which is the point of the suite: the same command runs it
+    # here and on a developer's machine, against the same pinned image, with the
+    # version recorded next to the assertions that depend on it. The runner
+    # provides the Docker socket and nothing else.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --strict-peer-dependencies
+
+      # `DATABASE_URL` is supplied by `globalSetup` from the container it
+      # started, and the rest of the environment comes from `jest.setup.ts`, so
+      # unlike the `test` job this one needs no secrets generated for it: it
+      # never boots the config module outside Jest.
+      - name: Postgres integration tests
+        run: pnpm test:integration
+        env:
+          NODE_OPTIONS: --throw-deprecation
+
   mutation:
     name: Mutation testing
     runs-on: ubuntu-latest
@@ -249,7 +293,7 @@ jobs:
   docker:
     name: Docker Push
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test, build, mutation]
+    needs: [lint, typecheck, test, build, integration, mutation]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

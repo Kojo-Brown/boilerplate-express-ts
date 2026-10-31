@@ -12,8 +12,10 @@
       "esbuild"
     ],
     "ignoredBuiltDependencies": [
+      "cpu-features",
       "msgpackr-extract",
-      "protobufjs"
+      "protobufjs",
+      "ssh2"
     ]
   },
   "scripts": {
@@ -28,6 +30,7 @@
     "lint": "eslint src --max-warnings=0",
     "test": "jest",
     "test:property": "jest --testPathPattern=\\.property\\.test\\.ts",
+    "test:integration": "jest -c jest.integration.config.ts",
     "test:mutation": "stryker run",
     "test:mutation:incremental": "stryker run --incremental",
     "rotate:field-keys": "tsx src/scripts/rotate-field-keys.ts",
@@ -71,6 +74,7 @@
     "@stryker-mutator/core": "9.6.1",
     "@stryker-mutator/jest-runner": "9.6.1",
     "@stryker-mutator/typescript-checker": "9.6.1",
+    "@testcontainers/postgresql": "12.2.1",
     "@types/express": "^5.0.0",
     "@types/express-session": "^1.17.10",
     "@types/jest": "^29.5.14",
