@@ -41,10 +41,13 @@ Warnings are failures in CI, on every major:
 | ESLint rules configured as `warn` | `pnpm lint` runs `eslint --max-warnings=0` |
 | Node runtime deprecations (ours or a dependency's) | `NODE_OPTIONS=--throw-deprecation` on every gate step |
 
-One gate is not on that matrix: [mutation testing](./docs/mutation-testing.md)
-runs on Node 22 alone, because a mutation score is a property of the test
-suite's assertions and not of the runtime — a mutant that survives on 22
-survives on 24.
+Two gates are not on that matrix, both on Node 22 alone and for the same kind
+of reason. [Mutation testing](./docs/mutation-testing.md): a mutation score is a
+property of the test suite's assertions and not of the runtime, so a mutant that
+survives on 22 survives on 24. [Postgres integration
+testing](./docs/integration-testing.md): what those suites measure is
+PostgreSQL's behaviour and the SQL this codebase sends it, and the `pg` driver
+is already exercised on both majors by the `test` job.
 
 To reproduce a CI failure locally, run the gate with the same flags:
 
@@ -52,6 +55,9 @@ To reproduce a CI failure locally, run the gate with the same flags:
 pnpm install --frozen-lockfile --strict-peer-dependencies
 NODE_OPTIONS=--throw-deprecation pnpm test
 ```
+
+`pnpm test` needs nothing running. `pnpm test:integration` needs a Docker
+socket, and nothing else — it starts the PostgreSQL it talks to.
 
 ## Design notes
 - [SOLID audit](./docs/solid.md) — the five principles applied to this codebase,
@@ -299,6 +305,15 @@ NODE_OPTIONS=--throw-deprecation pnpm test
   every cancelled download look like a failed transfer, a `catch` block whose
   three outcomes no case could distinguish, and an exported function with no
   test that coverage reported as covered.
+- [Integration testing](./docs/integration-testing.md) — a Testcontainers
+  PostgreSQL behind `pnpm test:integration`, because the DB layer's unit suites
+  mock the query layer and a mock accepts any SQL. 109 tests over the claims no
+  fake can settle: that a deadlock is reported as `40P01` only while
+  `deadlock_timeout` is under `lock_timeout` — get it backwards and the retry
+  loop silently never runs — that `FOR NO KEY UPDATE` lets a referencing insert
+  through where `FOR UPDATE` blocks it, that the two advisory lock spaces really
+  are separate, that `SET LOCAL` does not follow a connection back into the
+  pool, and that every migration's `down` restores the schema its `up` built.
 - [Property-based testing](./docs/property-based-testing.md) — fast-check over
   the same protocol parsers, as round-trip, metamorphic and invariant
   statements: that a resolved `Range` never names a byte the representation
