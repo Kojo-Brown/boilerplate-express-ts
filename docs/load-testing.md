@@ -183,30 +183,42 @@ printed or written to a file.
 
 `LOAD_BUDGETS` in `src/tests/load/budgets.ts`:
 
-| Request name | worst p95, idle machine | worst p95, machine busy | Budget | Request floor |
-| --- | --- | --- | --- | --- |
-| `GET /v1/health/live` | 1.47ms | 1.70ms | 25ms | 1500 |
-| `GET /v1/health/ready` | 2.79ms | 4.19ms | 40ms | 1500 |
-| `GET /v1/users/:id (cached)` | 1.68ms | 1.97ms | 30ms | 1500 |
-| `GET /v1/users/:id (uncached)` | 3.01ms | 4.61ms | 50ms | 1500 |
-| `GET /v1/users/:id (If-None-Match)` | 1.59ms | 2.00ms | 30ms | 1500 |
+| Request name | p95 on CI | local, idle | local, busy | Budget | Request floor |
+| --- | --- | --- | --- | --- | --- |
+| `GET /v1/health/live` | 0.72ms | 1.47ms | 1.70ms | 25ms | 1500 |
+| `GET /v1/health/ready` | 1.03ms | 2.79ms | 4.19ms | 40ms | 1500 |
+| `GET /v1/users/:id (cached)` | 0.71ms | 1.68ms | 1.97ms | 30ms | 1500 |
+| `GET /v1/users/:id (uncached)` | 1.38ms | 3.01ms | 4.61ms | 50ms | 1500 |
+| `GET /v1/users/:id (If-None-Match)` | 0.60ms | 1.59ms | 2.00ms | 30ms | 1500 |
 
-Both columns are from a four-core machine with a `postgres:16-alpine` container
-on localhost: 9,000 requests a run, 0 failures, 0 dropped iterations. The first
-is the worst of six runs with nothing else happening. The second is one run
-taken while `pnpm test:mutation` had the other cores — unintentionally, and then
-kept, because it is the most useful sample here. A CI runner shares itself with
-the server it is measuring, so the busy column is the one a budget has to
-survive, and the gap between the two says what sharing costs: nothing much on
-the two paths that only touch memory, and half as much again on the two that
-wait for Postgres.
+**CI** (`ubuntu-latest`, Postgres 16 as a service container): 9,005 requests,
+0 failures, 0 dropped iterations, 1,801 per name, aggregate p95 1.00ms; the
+whole job, image pull and migrations included, is 104 seconds.
 
-The idle column is worst-of-six rather than one sample for the same reason: a
-developer's machine is also doing other things, and a single run understates the
-spread.
+**Locally**, a four-core machine with a `postgres:16-alpine` container on
+loopback, 9,000 requests a run, 0 failures. The idle column is the worst of six
+runs with nothing else happening — worst-of-several rather than one sample,
+because a developer's machine is also doing other things and one run understates
+the spread. The busy column is one run taken while `pnpm test:mutation` had the
+other cores: unintentional, and then kept, because a runner shares itself with
+the server it is measuring and that is the condition a budget has to survive.
+The gap between the two local columns says what sharing costs — little on the
+paths that only touch memory, half as much again on the two that wait for
+Postgres.
 
-**These are regression bounds, not an SLO.** Each ceiling is ten to fifteen
-times the busy column, and the multiple is what hardware spread costs rather
+**The runner is two to three times faster than the local machine**, which is
+worth knowing before reading a red job as "CI is slow today": on this workload
+it is the quickest of the three columns, so a p95 near a ceiling there is a
+genuine regression and not the environment.
+
+**The budgets are not tightened to the CI column, deliberately.** They are ten
+to fifteen times the *worst* measurement — the busy local one — because that is
+the machine the gate also has to be runnable on. Pinned to CI's numbers the
+ceilings would be around 2ms, and the gate would fire on any developer with a
+build running in another terminal, which is how a gate gets switched off.
+
+**These are regression bounds, not an SLO.** The multiple is what hardware
+spread costs rather
 than a round number somebody liked. What they catch is the change that moves a
 response time by a *multiple*: an N+1 query added to a read path, a middleware
 that now hashes something per request, a dependency check made serial, the users
@@ -219,15 +231,16 @@ catches nothing at all.
 tempting version budgets revalidation *below* the unconditional read, because
 revalidation is cheaper. At this payload it is not cheaper in time: a user is
 about 230 bytes, so the saving is bytes on the wire, and the two measure within
-0.2ms of each other on every run made so far. A ceiling encoding "the 304 must
+0.2ms of each other on every run made so far, CI included, where the 304 is
+0.11ms quicker. A ceiling encoding "the 304 must
 be faster" would be gating on noise. Re-measure before changing that, on a
 resource whose representation is large enough for the claim to be about
 milliseconds.
 
-**The CI column is not in that table yet.** Every number above is from one
-machine. Until a `load` job has run on `ubuntu-latest` a few times, the
-ceilings are calibrated against the local spread alone; once it has, the right
-move is to add the column and re-derive the multiples from the worse of the two,
+The CI column is one run — the job's first. A second and a third will say
+whether 1.00ms aggregate is the runner's normal or a quiet afternoon on it; if
+the runner turns out to vary by more than the local machine does, the column to
+re-derive the multiples from is whichever ends up worst, and the change belongs
 in a commit that says so.
 
 ### Re-measuring, and changing a budget

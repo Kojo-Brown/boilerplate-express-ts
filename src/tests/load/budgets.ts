@@ -47,9 +47,11 @@ export interface LoadBudget {
    *
    * These are regression bounds and not an SLO: each is ten to fifteen times
    * the worst measurement in the table in `docs/load-testing.md`, which was
-   * taken on a machine whose other cores were busy — the condition a CI runner
-   * is always in, since it shares itself with the server it is measuring. The
-   * multiple is what that spread costs, not a number anybody liked.
+   * taken on a developer machine whose other cores were busy. They are
+   * deliberately *not* tightened to the CI column, which is two to three times
+   * quicker — pinned there the ceilings would be around 2ms and the gate would
+   * fire on anyone with a build running in another terminal. The multiple is
+   * what that spread costs, not a number anybody liked.
    *
    * Lowering one to turn a red build green is the single move this gate exists
    * to prevent. If a change genuinely makes a path slower and that is
