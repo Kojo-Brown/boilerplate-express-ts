@@ -16,6 +16,7 @@ Production-grade Express 5 + TypeScript 6 REST API boilerplate. Spec-driven and 
    pnpm test
    pnpm test:integration
    pnpm build
+   pnpm test:load && pnpm check:load
    ```
    `pnpm test:integration` is the `integration` CI job and blocks a merge like
    the rest, so it belongs in this list. It is seconds of work: `globalSetup`
@@ -25,6 +26,25 @@ Production-grade Express 5 + TypeScript 6 REST API boilerplate. Spec-driven and 
    adding a suite; the two rules that bite are that database work belongs in
    `beforeAll`/`beforeEach` rather than `afterAll`, and that a held lock goes
    through `holding`.
+
+   `pnpm test:load` and `pnpm check:load` are the `load` CI job and block a
+   merge like the rest, so they belong in this list too. They are last because
+   the run is sixty seconds of wall clock — the slowest thing here that is not
+   the mutation suite — and because unlike `test:integration` it wants a
+   Postgres on `DATABASE_URL` and the secrets the config module validates at
+   boot, the same environment `pnpm migrate` wants, on top of a Docker socket
+   for the k6 image. The split is deliberate and not cosmetic: `pnpm test:load`
+   measures and `pnpm check:load` decides, because a k6 threshold scores a
+   submetric that recorded nothing as `p(95)=0` and reports it as **passing** —
+   so a renamed or deleted task would leave the run green having measured
+   nothing. Read `docs/load-testing.md` before adding a path or touching a
+   budget. The three things that bite are that a request name is a key of
+   `LOAD_BUDGETS` and the profile's task table is typed against it, so a path
+   added without a ceiling does not compile; that the gate also refuses a run
+   whose aggregate request count exceeds the sum of its named rows, which is how
+   an untagged request is caught; and that the budgets carry roughly
+   seventeenfold headroom over the worst of several measurements, so a breach is
+   a real regression and never something to turn green by raising a ceiling.
 6. Commit, `git push -u origin <branch>`, then `gh pr create`.
 7. `gh pr checks --watch` → **merge only if every check is green**:
    `gh pr merge --squash --delete-branch`
