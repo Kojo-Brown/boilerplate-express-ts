@@ -237,11 +237,13 @@ be faster" would be gating on noise. Re-measure before changing that, on a
 resource whose representation is large enough for the claim to be about
 milliseconds.
 
-The CI column is one run — the job's first. A second and a third will say
-whether 1.00ms aggregate is the runner's normal or a quiet afternoon on it; if
-the runner turns out to vary by more than the local machine does, the column to
-re-derive the multiples from is whichever ends up worst, and the change belongs
-in a commit that says so.
+The CI column is the job's first run. It has since passed a second time on the
+same pull request, in 98 seconds, which establishes that the job is repeatable
+but not what its spread is — the numbers above were not re-read from that run.
+A few more will say whether 1.00ms aggregate is the runner's normal or a quiet
+afternoon on it; if the runner turns out to vary by more than the local machine
+does, the column to re-derive the multiples from is whichever ends up worst,
+and the change belongs in a commit that says so.
 
 ### Re-measuring, and changing a budget
 
