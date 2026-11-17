@@ -311,11 +311,19 @@ jobs:
     # are already exercised on both majors by the `test` job.
 
     services:
+      # `POSTGRES_HOST_AUTH_METHOD: trust` rather than the `POSTGRES_PASSWORD:
+      # postgres` the `test` job above uses, and not as a shortcut. A service
+      # container is reachable only from this job's own network and is destroyed
+      # with it, so the password protects nothing — while a hardcoded one is a
+      # credential-shaped string in a tracked file, which is exactly what the
+      # repository's secret scanning is for and which it does flag. The
+      # alternative is teaching the scanner to ignore `.github/workflows/`, and
+      # a password nobody needs is not worth narrowing that.
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: boilerplate_test
         ports:
           - 5432:5432
@@ -331,7 +339,8 @@ jobs:
     # only be a service to wait for.
     env:
       NODE_ENV: development
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/boilerplate_test
+      # No password in the URL, matching the service container above.
+      DATABASE_URL: postgresql://postgres@localhost:5432/boilerplate_test
       JWT_ACCESS_EXPIRES_IN: 15m
       JWT_REFRESH_EXPIRES_IN: 7d
       CORS_ORIGIN: http://localhost:3000
