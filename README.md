@@ -41,13 +41,17 @@ Warnings are failures in CI, on every major:
 | ESLint rules configured as `warn` | `pnpm lint` runs `eslint --max-warnings=0` |
 | Node runtime deprecations (ours or a dependency's) | `NODE_OPTIONS=--throw-deprecation` on every gate step |
 
-Two gates are not on that matrix, both on Node 22 alone and for the same kind
-of reason. [Mutation testing](./docs/mutation-testing.md): a mutation score is a
+Three gates are not on that matrix, all on Node 22 alone and for related
+reasons. [Mutation testing](./docs/mutation-testing.md): a mutation score is a
 property of the test suite's assertions and not of the runtime, so a mutant that
 survives on 22 survives on 24. [Postgres integration
 testing](./docs/integration-testing.md): what those suites measure is
 PostgreSQL's behaviour and the SQL this codebase sends it, and the `pg` driver
-is already exercised on both majors by the `test` job.
+is already exercised on both majors by the `test` job. [Load
+testing](./docs/load-testing.md): a latency ceiling is calibrated against an
+instrument — the same k6, pinned by digest, and the same runtime — so measuring
+on one major and gating on another would be comparing two instruments and
+calling the difference a regression.
 
 To reproduce a CI failure locally, run the gate with the same flags:
 
@@ -57,7 +61,9 @@ NODE_OPTIONS=--throw-deprecation pnpm test
 ```
 
 `pnpm test` needs nothing running. `pnpm test:integration` needs a Docker
-socket, and nothing else — it starts the PostgreSQL it talks to.
+socket, and nothing else — it starts the PostgreSQL it talks to. `pnpm test:load`
+needs a Docker socket *and* a Postgres on `DATABASE_URL`, and is followed by
+`pnpm check:load`, which is the half that decides.
 
 ## Design notes
 - [SOLID audit](./docs/solid.md) — the five principles applied to this codebase,
@@ -322,6 +328,15 @@ socket, and nothing else — it starts the PostgreSQL it talks to.
   exactly once. Also why the seed is pinned, and why each suite that depends on
   its generators meeting asserts the rate — two of those guards caught
   generators that were producing 0% and 1% interesting cases.
+- [Load testing](./docs/load-testing.md) — five read paths driven by k6 for a
+  minute on every pull request, with a p95 ceiling on each. Why the ceiling is a
+  separate `pnpm check:load` rather than a k6 threshold: k6 scores a submetric
+  that recorded nothing as `p(95)=0` and reports the threshold on it as
+  *passing*, so a renamed or deleted task leaves the run green having measured
+  nothing. Also why the readiness row runs with its cache off, how the uncached
+  row defeats a 200-entry LRU with a 400-id round robin (and the index-scan
+  count that proves it did), and the two k6 Rates in one summary whose pass and
+  fail fields mean opposite things.
 
 ## Authentication
 
