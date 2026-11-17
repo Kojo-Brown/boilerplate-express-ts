@@ -290,10 +290,119 @@ jobs:
           path: reports/mutation/
           retention-days: 7
 
+  load:
+    name: Load test (k6 + latency budget)
+    runs-on: ubuntu-latest
+    # After the unit suite, for the reason `integration` and `mutation` are:
+    # this job starts a server and drives it for a minute, so on a red suite it
+    # can only report the same failure later and at more runner time.
+    needs: [test]
+    # The run itself is ~80 seconds. The bound is for a k6 image pull that hangs
+    # rather than fails, and for a server that never becomes live —
+    # `run.ts` already caps that wait at 60s of its own.
+    timeout-minutes: 15
+
+    # One Node major, deliberately, and for a different reason from the other
+    # single-major jobs. A latency ceiling is calibrated against an instrument:
+    # the number in `budgets.ts` is only comparable to runs made the same way,
+    # on the same k6 (pinned by digest in `run.ts`) and the same runtime.
+    # Measuring on 22 and gating on 24 would be comparing two instruments and
+    # calling the difference a regression. The `pg` driver and the HTTP stack
+    # are already exercised on both majors by the `test` job.
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: boilerplate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # No Redis. `run.ts` starts the server with `OUTBOX_RELAY_INTERVAL_SECONDS=0`
+    # and the default `OUTBOX_DISPATCH_TARGET=bus`, so nothing in the profile
+    # reaches a Redis — and a dependency the measured paths do not touch would
+    # only be a service to wait for.
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/boilerplate_test
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      CORS_ORIGIN: http://localhost:3000
+      FIELD_ENCRYPTION_ACTIVE_KEY_ID: ci-1
+      WEBHOOK_SIGNING_ACTIVE_KEY_ID: ci-1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same ephemeral ring the `test` job mints, and needed for the same
+      # reason: both the migrate step and the server this job starts boot the
+      # config module, which refuses to start without one.
+      - name: Generate ephemeral CI secrets
+        run: |
+          printf 'JWT_ACCESS_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'JWT_REFRESH_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'SESSION_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          printf 'FIELD_ENCRYPTION_KEYS=ci-1:%s\n' "$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+          printf 'WEBHOOK_SIGNING_SECRETS=ci-1:%s\n' "$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --strict-peer-dependencies
+
+      - name: Run migrations
+        run: pnpm migrate
+        env:
+          NODE_OPTIONS: --throw-deprecation
+
+      # The measurement. k6 runs from the image digest pinned in `run.ts`
+      # through the runner's Docker socket, which is the same command a
+      # developer runs — the reason `docs/integration-testing.md` gives for
+      # Testcontainers over a `services:` block applies to the load generator
+      # too, with the extra point that k6's own client overhead lands inside
+      # `http_req_duration` and so belongs to the calibration.
+      #
+      # `--throw-deprecation` is deliberately *not* set here. It is on every
+      # other gate because a deprecation warning should fail the build; in this
+      # one it would be inside the process being timed, turning a warning into
+      # a thrown error partway through a measurement rather than at the point a
+      # test asserts something.
+      - name: Load test
+        run: pnpm test:load
+
+      # The gate. A separate step so a red build says which half failed: this
+      # one going red is a budget, the one above it going red is k6 or the
+      # server.
+      - name: Latency budget
+        run: pnpm check:load
+
+      # Uploaded on failure as well — especially on failure. The summary has
+      # every percentile k6 recorded, not only the gated p95, and the server log
+      # is the only account of what the application did during the run.
+      - name: Upload load report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-report
+          path: reports/load/
+          retention-days: 7
+
   docker:
     name: Docker Push
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test, build, integration, mutation]
+    needs: [lint, typecheck, test, build, integration, load, mutation]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
